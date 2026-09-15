@@ -1,3 +1,4 @@
+// Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 package com.bai.env.region;
 
 import com.bai.env.Context;
@@ -20,6 +21,7 @@ public class Heap extends RegionBase {
     private boolean valid;
 
     private Address freeSite = null;
+    private Context freeContext = null;
     
     private static final Map<ImmutableTriple<Address, Context, Boolean>, Heap> pool = new HashMap<>();
 
@@ -64,6 +66,11 @@ public class Heap extends RegionBase {
         return freeSite;
     }
 
+    public Context getFreeContext() {
+        assert (!valid);
+        return freeContext;
+    }
+
     private void setFreeSite(Address addr) {
         assert (addr != null && !valid);
         freeSite = addr;
@@ -80,9 +87,14 @@ public class Heap extends RegionBase {
      * Convert this Heap region into a corresponding freed Heap region with a deallocation address provided
      */
     public Heap toInvalid(Address addr) {
+        return toInvalid(addr, null);
+    }
+
+    public Heap toInvalid(Address addr, Context freeContext) {
         if (valid == true) {
             Heap invalidHeap = getHeap(allocAddress, context, 0, false);
             invalidHeap.setFreeSite(addr);
+            invalidHeap.freeContext = freeContext;
             return invalidHeap;
         }
         return this;

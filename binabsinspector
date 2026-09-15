@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -eu
+
+if [ "$#" -lt 1 ]; then
+    echo "Usage: $0 BINARY [BinAbsInspector options]" >&2
+    exit 2
+fi
+
+binary=$(realpath -- "$1")
+shift
+params=${*:-"-all"}
+project_dir=$(mktemp -d "${TMPDIR:-/tmp}/binabsinspector.XXXXXX")
+trap 'rm -rf -- "$project_dir"' EXIT
+
+headless=${GHIDRA_HEADLESS:-}
+if [ -z "$headless" ] && [ -n "${GHIDRA_INSTALL_DIR:-${GHIDRA_HOME:-}}" ]; then
+    headless="${GHIDRA_INSTALL_DIR:-$GHIDRA_HOME}/support/analyzeHeadless"
+fi
+if [ -z "$headless" ]; then
+    headless=$(command -v analyzeHeadless || true)
+fi
+if [ -z "$headless" ] || [ ! -x "$headless" ]; then
+    echo "Set GHIDRA_HEADLESS or GHIDRA_INSTALL_DIR to a Ghidra installation." >&2
+    exit 2
+fi
+if [ -n "${Z3_LIBRARY_DIR:-}" ]; then
+    export LD_LIBRARY_PATH="$Z3_LIBRARY_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+"$headless" \
+    "$project_dir" project -deleteProject -overwrite -import "$binary" \
+    -postScript BinAbsInspector.java "@@$params"

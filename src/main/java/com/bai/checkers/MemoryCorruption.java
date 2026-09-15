@@ -1,3 +1,4 @@
+// Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 package com.bai.checkers;
 
 import com.bai.env.AbsEnv;
@@ -12,6 +13,7 @@ import com.bai.env.region.Heap;
 import com.bai.util.CWEReport;
 import com.bai.util.GlobalState;
 import com.bai.util.Logging;
+import com.bai.util.MemoryEvidenceExporter;
 import com.bai.util.Utils;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.data.FunctionDefinition;
@@ -142,7 +144,8 @@ public class MemoryCorruption {
                     break;
                 default: // nothing
             }
-            details += " for chunk allocated at " + chunk.getAllocAddress() + ", when access";
+            details += " for chunk allocated at " + chunk.getAllocAddress()
+                    + ", first freed at " + chunk.getFreeSite() + ", when access";
             CWEReport report = new CWEReport(CWE416, VERSION, details)
                     .setAddress(address)
                     .setContext(context);
@@ -160,12 +163,21 @@ public class MemoryCorruption {
      * @return
      */
     public static boolean checkDoubleFree(AbsVal ptr, Address address, Context context) {
+        return checkDoubleFree(ptr, address, context, null, 0);
+    }
+
+    public static boolean checkDoubleFree(AbsVal ptr, Address address, Context context,
+            Function callee, int argumentIndex) {
         assert ptr.getRegion().isHeap();
         Heap chunk = (Heap) ptr.getRegion();
         if (!chunk.isValid()) {
-            CWEReport report = new CWEReport(CWE415, VERSION, "Double Free")
+            String details = "Double Free for chunk allocated at " + chunk.getAllocAddress()
+                    + ", first freed at " + chunk.getFreeSite();
+            CWEReport report = new CWEReport(CWE415, VERSION, details)
                     .setAddress(address)
-                    .setContext(context);
+                    .setContext(context)
+                    .setStructuredEvidence(MemoryEvidenceExporter.doubleFreeEvidence(
+                            chunk, address, context, callee, argumentIndex));
             Logging.report(report);
             return false;
         }
@@ -274,7 +286,7 @@ public class MemoryCorruption {
                 if (!argAbsVal.getRegion().isHeap()) {
                     continue;
                 }
-                isCheckPasss |= checkDoubleFree(argAbsVal, address, context);
+                isCheckPasss |= checkDoubleFree(argAbsVal, address, context, calleeFunc, 0);
                 if (!isCheckPasss) { // stop checking once detected.
                     return isCheckPasss;
                 }

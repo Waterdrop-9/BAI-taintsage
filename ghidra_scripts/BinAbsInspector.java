@@ -1,3 +1,4 @@
+// Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 //
 //@author Tencent KeenLab
 //@category Analysis
@@ -155,6 +156,7 @@ public class BinAbsInspector extends GhidraScript {
         }
         Logging.info("Running checkers");
         CheckerManager.runCheckers(GlobalState.config);
+        com.bai.util.MemoryEvidenceExporter.writeConfiguredEvidence();
         guiProcessResult();
         GlobalState.reset();
     }

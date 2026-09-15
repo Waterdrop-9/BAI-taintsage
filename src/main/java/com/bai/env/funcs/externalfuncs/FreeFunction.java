@@ -1,3 +1,4 @@
+// Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 package com.bai.env.funcs.externalfuncs;
 
 import static com.bai.util.Utils.getAddress;
@@ -80,7 +81,8 @@ public class FreeFunction extends ExternalFunctionBase {
                 if (!oldAbsVal.getRegion().isHeap()) {
                     continue;
                 }
-                Heap invalidHeap = ((Heap) oldAbsVal.getRegion()).toInvalid(freeSiteAddress);
+                Heap invalidHeap = ((Heap) oldAbsVal.getRegion()).toInvalid(
+                        freeSiteAddress, context);
                 newKSet = newKSet.remove(oldAbsVal).insert(AbsVal.getPtr(invalidHeap));
             }
             inOutEnv.set(entry.getKey(), newKSet, true);

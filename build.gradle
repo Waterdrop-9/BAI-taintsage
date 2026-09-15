@@ -1,3 +1,4 @@
+// Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 // Builds a Ghidra Extension for a given Ghidra installation.
 //
 // An absolute path to the Ghidra installation directory must be supplied either by setting the 
@@ -15,7 +16,6 @@
 // for the correction version of Gradle to use for the Ghidra installation you specify.
 
 plugins {
-	id("net.ltgt.errorprone") version "2.0.2"
 	id "com.coditory.integration-test" version "1.3.0"
 	id "jacoco"
 }
@@ -40,6 +40,13 @@ else {
 
 repositories {
 	mavenCentral()
+}
+
+tasks.named('zipSource', Zip) {
+	include 'build.gradle', 'gradlew', 'gradlew.bat', 'gradle/wrapper/**'
+	include 'ghidra_scripts/**', 'LICENSE', 'README.md', 'TAINTSAGE.md'
+	include 'extension.properties', 'Module.manifest', 'binabsinspector'
+	include 'src/test/**', 'src/main/resources/**'
 }
 
 sourceSets {
@@ -67,6 +74,10 @@ sourceSets {
 			srcDirs = ['src/integration/resources']
 		}
 	}
+}
+
+jacoco {
+	toolVersion = "0.8.12"
 }
 
 jacocoTestReport {
@@ -113,12 +124,11 @@ javadoc {
 
 dependencies {
 	testImplementation "junit:junit:4.13.2"
-	testImplementation 'org.mockito:mockito-core:4.0.0'
+	testImplementation 'org.mockito:mockito-core:5.11.0'
 	implementation files('lib/javimmutable-collections-2.4.1.jar')
 	implementation files('lib/com.microsoft.z3.jar')
 	implementation files('lib/forms_rt.jar')
 	implementation 'com.google.errorprone:error_prone_annotations:2.10.0'
 	implementation 'com.fasterxml.jackson.core:jackson-databind:2.13.2'
 	implementation 'org.apache.logging.log4j:log4j-layout-template-json:2.17.2'
-	errorprone("com.google.errorprone:error_prone_core:2.10.0")
 }

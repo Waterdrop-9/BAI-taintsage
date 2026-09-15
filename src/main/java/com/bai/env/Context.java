@@ -1,3 +1,4 @@
+// Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 package com.bai.env;
 
 import com.bai.env.funcs.externalfuncs.ExternalFunctionBase;
@@ -24,7 +25,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
-import org.apache.commons.lang.exception.ExceptionUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.javimmutable.collections.JImmutableSet;
 import org.javimmutable.collections.tree.JImmutableTreeMap;
 

@@ -1,3 +1,4 @@
+// Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 package com.bai.env.funcs.stdfuncs;
 
 import com.bai.env.ALoc;
@@ -11,6 +12,8 @@ import com.bai.env.region.Heap;
 import com.bai.util.GlobalState;
 import com.bai.util.Logging;
 import com.bai.util.Utils;
+import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.Pointer;
 import java.util.HashMap;
 import java.util.Set;
 
@@ -35,6 +38,16 @@ public class MapModel extends CppStdModelBase<HashMap<AbsVal, AbsVal>> {
         return new HashMap<>(other);
     }
 
+    static int getReferencedValueSize(DataType parameterType, int fallbackSize) {
+        if (parameterType instanceof Pointer) {
+            DataType referencedType = ((Pointer) parameterType).getDataType();
+            if (referencedType != null && referencedType.getLength() > 0) {
+                return referencedType.getLength();
+            }
+        }
+        return fallbackSize;
+    }
+
     private void subscript(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
         if (callFunc.getParameterCount() != 2) {
             Logging.error("Wrong parameter for: " + callFunc);
@@ -54,7 +67,9 @@ public class MapModel extends CppStdModelBase<HashMap<AbsVal, AbsVal>> {
             return;
         }
         AbsVal tmp = nodeKSet.iterator().next();
-        ALoc tmpALoc = ALoc.getALoc(tmp.getRegion(), tmp.getValue(), GlobalState.arch.getDefaultPointerSize());
+        int keySize = getReferencedValueSize(callFunc.getParameter(1).getDataType(),
+                GlobalState.arch.getDefaultPointerSize());
+        ALoc tmpALoc = ALoc.getALoc(tmp.getRegion(), tmp.getValue(), keySize);
         KSet keyKSet = inOutEnv.get(tmpALoc);
 
         if (keyKSet.isTop()) {

@@ -1,3 +1,10 @@
+# BinAbsInspector: TaintSage Integration
+
+This is a modified version of [KeenSecurityLab/BinAbsInspector](https://github.com/KeenSecurityLab/BinAbsInspector),
+based on commit `658b413`. TaintSage modifications consolidated on 2026-09-15
+are distributed under GPLv3, with the original license and notices retained.
+See [TAINTSAGE.md](TAINTSAGE.md) for the changes and source build instructions.
+
 # What is  BinAbsInspector?
 
 BinAbsInspector (Binary Abstract Inspector) is a static analyzer for automated reverse engineering and scanning vulnerabilities in binaries, which is a long-term research project incubated at [Keenlab](https://keenlab.tencent.com/). It is based on abstract interpretation with the support from Ghidra. It works on Ghidra's Pcode instead of assembly. Currently it supports binaries on x86,x64, armv7 and aarch64. 
@@ -17,7 +24,7 @@ BinAbsInspector (Binary Abstract Inspector) is a static analyzer for automated r
 # Building
 Build the extension by yourself, if you want to develop a new feature, please refer to [development guide](https://github.com/KeenSecurityLab/BinAbsInspector/wiki/Developer-Guide).
 + Install Ghidra and Z3
-+ Install [Gradle 7.x](https://gradle.org/releases/) (tested version: 7.4)
++ Install [Gradle 8.5](https://gradle.org/releases/) or use `./gradlew` (JDK 21 and Ghidra 12.0.4)
 + Pull the repository
 + Run `gradle buildExtension` under repository root
 + The extension will be generated at `dist/${GhidraVersion}_${date}_BinAbsInspector.zip` 
