@@ -7,6 +7,7 @@
 //@toolbar keenlogo.gif
 
 import com.bai.checkers.CheckerManager;
+import com.bai.util.AnalysisOutcome;
 import com.bai.env.funcs.FunctionModelManager;
 import com.bai.util.Config.HeadlessParser;
 import ghidra.app.util.bin.MemoryByteProvider;
@@ -30,6 +31,9 @@ import org.apache.commons.lang3.StringUtils;
 
 public class BinAbsInspector extends GhidraScript {
 
+    private AnalysisOutcome outcome = AnalysisOutcome.failed("setup_failed", "Analysis was not initialized");
+    private final java.util.List<String> entryPoints = new java.util.ArrayList<>();
+
     protected boolean prepareProgram() {
         GlobalState.currentProgram = this.currentProgram;
         GlobalState.flatAPI = this;
@@ -49,19 +53,21 @@ public class BinAbsInspector extends GhidraScript {
         }
         Logging.info("Running solver on \"" + entryFunction + "()\" function");
         InterSolver solver = new InterSolver(entryFunction, true);
-        solver.run();
+        entryPoints.add(entryFunction.getEntryPoint().toString(true));
+        outcome = solver.run();
         return true;
     }
 
     protected boolean analyzeFromAddress(Address entryAddress) {
-        Function entryFunction = GlobalState.flatAPI.getFunctionAt(entryAddress);
-        if (entryAddress == null) {
+        Function entryFunction = entryAddress == null ? null : GlobalState.flatAPI.getFunctionAt(entryAddress);
+        if (entryFunction == null) {
             Logging.error("Could not find entry function at " + entryAddress);
             return false;
         }
         Logging.info("Running solver on \"" + entryFunction + "()\" function");
         InterSolver solver = new InterSolver(entryFunction, false);
-        solver.run();
+        entryPoints.add(entryFunction.getEntryPoint().toString(true));
+        outcome = solver.run();
         return true;
     }
 
@@ -92,7 +98,8 @@ public class BinAbsInspector extends GhidraScript {
                 Logging.info("Start from entrypoint");
                 Logging.info("Running solver on \"" + GlobalState.eEntryFunction + "()\" function");
                 InterSolver solver = new InterSolver(GlobalState.eEntryFunction, false);
-                solver.run();
+                entryPoints.add(GlobalState.eEntryFunction.getEntryPoint().toString(true));
+                outcome = solver.run();
                 return true;
             }
         }
@@ -115,49 +122,64 @@ public class BinAbsInspector extends GhidraScript {
 
     @Override
     public void run() throws Exception {
-        GlobalState.config = new Config();
-        if (isRunningHeadless()) {
-            String allArgString = StringUtils.join(getScriptArgs()).strip();
-            GlobalState.config = HeadlessParser.parseConfig(allArgString);
-        } else {
-            GlobalState.ghidraScript = this;
+        GlobalState.currentProgram = this.currentProgram;
+        try {
             GlobalState.config = new Config();
-            GlobalState.config.setGUI(true);
-            ConfigDialog dialog = new ConfigDialog(GlobalState.config);
-            dialog.showDialog();
-            if (!dialog.isSuccess()) {
+            if (isRunningHeadless()) {
+                String allArgString = StringUtils.join(getScriptArgs()).strip();
+                GlobalState.config = HeadlessParser.parseConfig(allArgString);
+            } else {
+                GlobalState.ghidraScript = this;
+                GlobalState.config = new Config();
+                GlobalState.config.setGUI(true);
+                ConfigDialog dialog = new ConfigDialog(GlobalState.config);
+                dialog.showDialog();
+                if (!dialog.isSuccess()) {
+                    return;
+                }
+            }
+            if (!Logging.init()) {
                 return;
             }
-        }
-        if (!Logging.init()) {
-            return;
-        }
-        FunctionModelManager.initAll();
-        if (GlobalState.config.isEnableZ3() && !Utils.checkZ3Installation()) {
-            return;
-        }
-        Logging.info("Preparing the program");
-        if (!prepareProgram()) {
-            Logging.error("Failed to prepare the program");
-            return;
-        }
-        if (isRunningHeadless()) {
-            if (!Utils.registerExternalFunctionsConfig(GlobalState.currentProgram, GlobalState.config)) {
+            FunctionModelManager.initAll();
+            if (GlobalState.config.isEnableZ3() && !Utils.checkZ3Installation()) {
                 return;
             }
-        } else {
-            Utils.loadCustomExternalFunctionFromLabelHistory(GlobalState.currentProgram);
+            Logging.info("Preparing the program");
+            if (!prepareProgram()) {
+                Logging.error("Failed to prepare the program");
+                return;
+            }
+            if (isRunningHeadless()) {
+                if (!Utils.registerExternalFunctionsConfig(GlobalState.currentProgram, GlobalState.config)) {
+                    return;
+                }
+            } else {
+                Utils.loadCustomExternalFunctionFromLabelHistory(GlobalState.currentProgram);
+            }
+            GlobalState.arch = new Architecture(GlobalState.currentProgram);
+            boolean success = analyze();
+            if (!success) {
+                outcome = AnalysisOutcome.failed("missing_entry", "No supported entry function found");
+                Logging.error("Failed to analyze the program: no entrypoint.");
+                return;
+            }
+            if ("completed".equals(outcome.getStatus())) {
+                Logging.info("Running checkers");
+                CheckerManager.runCheckers(GlobalState.config);
+            }
+            guiProcessResult();
+        } catch (Exception error) {
+            outcome = entryPoints.isEmpty()
+                    ? AnalysisOutcome.failed("execution_exception", error.toString())
+                    : AnalysisOutcome.partial("execution_exception", error.toString());
+            Logging.error(error.toString());
+        } finally {
+            try {
+                com.bai.util.MemoryEvidenceExporter.writeConfiguredEvidence(outcome, entryPoints);
+            } finally {
+                GlobalState.reset();
+            }
         }
-        GlobalState.arch = new Architecture(GlobalState.currentProgram);
-        boolean success = analyze();
-        if (!success) {
-            Logging.error("Failed to analyze the program: no entrypoint.");
-            return;
-        }
-        Logging.info("Running checkers");
-        CheckerManager.runCheckers(GlobalState.config);
-        com.bai.util.MemoryEvidenceExporter.writeConfiguredEvidence();
-        guiProcessResult();
-        GlobalState.reset();
     }
 }

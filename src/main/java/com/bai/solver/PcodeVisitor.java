@@ -2,6 +2,7 @@ package com.bai.solver;
 
 import com.bai.env.ALoc;
 import com.bai.env.AbsEnv;
+import com.bai.env.MemoryEvent;
 import com.bai.env.AbsVal;
 import com.bai.env.Context;
 import com.bai.env.ContextTransitionTable;
@@ -87,12 +88,7 @@ public class PcodeVisitor {
         CFG cfg = CFG.getCFG(context.getFunction());
         List<Address> successors = cfg.getSuccs(address);
         for (Address successor : successors) {
-            AbsEnv oldEnv = context.getValueBefore(successor);
-            AbsEnv newEnv = oldEnv.join(inOutEnv);
-            if (newEnv != null) {
-                context.setValueBefore(successor, newEnv);
-                context.insertToWorklist(successor);
-            }
+            context.propagateBefore(successor, inOutEnv);
         }
     }
 
@@ -166,7 +162,7 @@ public class PcodeVisitor {
      * @return the array of ImmutablePair<Address, AbsEnv>, taken pair at index 0, fallthrough pair at index 1;
      */
     @SuppressWarnings("unchecked")
-    private ImmutablePair<Address, AbsEnv>[] processConstraints(Address address, AbsEnv inOutEnv, Context context) {
+    private ImmutablePair<Address, AbsEnv>[] processConstraints(Address address, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context) {
         PcodeOp[] pcodeOps = GlobalState.flatAPI.getInstructionAt(address).getPcode(true);
         PcodeOp pcode = pcodeOps[pcodeOps.length - 1];
         assert pcode.getOpcode() == PcodeOp.CBRANCH;
@@ -198,8 +194,7 @@ public class PcodeVisitor {
             return res;
         }
 
-        ALoc conditionALoc = ALoc.getALoc(conditionVarnode);
-        KSet conditionKSet = inOutEnv.get(conditionALoc);
+        KSet conditionKSet = getKSet(conditionVarnode, inOutEnv, tmpEnv, pcode);
         if (conditionKSet.isFalse()) {
             res[1] = ImmutablePair.of(fallThroughAddress, inOutEnv);
             return res;
@@ -289,8 +284,8 @@ public class PcodeVisitor {
         return newAbsEnv;
     }
 
-    private void processCBranchNext(Address address, AbsEnv inOutEnv) {
-        ImmutablePair<Address, AbsEnv>[] validEnvPairs = processConstraints(address, inOutEnv, context);
+    private void processCBranchNext(Address address, AbsEnv inOutEnv, AbsEnv tmpEnv) {
+        ImmutablePair<Address, AbsEnv>[] validEnvPairs = processConstraints(address, inOutEnv, tmpEnv, context);
         assert validEnvPairs.length == 2;
         for (int i = 0; i < validEnvPairs.length; i++) {
             ImmutablePair<Address, AbsEnv> pair = validEnvPairs[i];
@@ -298,16 +293,7 @@ public class PcodeVisitor {
                 continue;
             }
             Address successorAddress = pair.getLeft();
-            AbsEnv oldEnv = context.getValueBefore(successorAddress);
-            if (oldEnv == null) {
-                continue;
-            }
-            AbsEnv newEnv = oldEnv.join(pair.getRight());
-            if (newEnv == null) {
-                continue;
-            }
-            context.setValueBefore(successorAddress, newEnv);
-            context.insertToWorklist(successorAddress);
+            context.propagateBefore(successorAddress, pair.getRight());
         }
     }
 
@@ -346,31 +332,7 @@ public class PcodeVisitor {
         }
     }
 
-    /**
-     * Adjust all Local AbsVal in given KSet.
-     * @param kSet
-     * @return null if no AbsVal got adjusted, otherwise return adjusted KSet.
-     */
-    private KSet adjustLocalAbsVal(KSet kSet) {
-        boolean hasAdjusted = false;
-        if (!kSet.isNormal()) {
-            return null;
-        }
 
-        KSet resKSet = new KSet(kSet.getBits(), kSet.getTaints());
-        for (AbsVal absVal : kSet) {
-            List<AbsVal> adjustedAbsVals = Utils.adjustLocalAbsVal(absVal, context, kSet.getBits());
-            if (!adjustedAbsVals.isEmpty()) {
-                hasAdjusted = true;
-                for (AbsVal adjusted : adjustedAbsVals) {
-                    resKSet = resKSet.insert(adjusted);
-                }
-            } else {
-                resKSet = resKSet.insert(absVal);
-            }
-        }
-        return hasAdjusted ? resKSet : null;
-    }
 
     /**
      * Tracking the size of local region, mainly for stack out of bound checking.
@@ -437,6 +399,8 @@ public class PcodeVisitor {
         if (externalFunction != null) {
             Logging.debug("Invoke external function model: " + funcName);
             externalFunction.invoke(pcode, inOutEnv, tmpEnv, context, callee);
+        } else {
+            inOutEnv.markHeapGap("unmodeled_call_transfer:" + funcName, MemoryEvent.at(pcode, context, "gap"));
         }
         if (GlobalState.arch.isX86()) {
             // pop return address on stack
@@ -457,6 +421,9 @@ public class PcodeVisitor {
         if (stdModel != null) {
             Logging.debug("Invoke std function model: " + callee.getName());
             stdModel.invoke(pcode, inOutEnv, tmpEnv, context, callee);
+            inOutEnv.markHeapGap("container_state_not_path_sensitive", MemoryEvent.at(pcode, context, "gap"));
+        } else {
+            inOutEnv.markHeapGap("unmodeled_std_transfer:" + namespaceString, MemoryEvent.at(pcode, context, "gap"));
         }
         if (GlobalState.arch.isX86()) {
             // pop return address on stack
@@ -479,7 +446,7 @@ public class PcodeVisitor {
     }
 
 
-    private void storePtr(AbsVal ptr, KSet srcKSet, AbsEnv inOutEnv, AbsEnv tmpEnv, Varnode src) {
+    private void storePtr(AbsVal ptr, KSet srcKSet, AbsEnv inOutEnv, AbsEnv tmpEnv, Varnode src, boolean strong) {
         ALoc aLoc;
         if (srcKSet.isTop()) {
             aLoc = ALoc.getALoc(ptr.getRegion(), ptr.getValue(), src.getSize());
@@ -494,7 +461,7 @@ public class PcodeVisitor {
         } else {
             env = inOutEnv;
         }
-        env.set(aLoc, srcKSet, true);
+        env.set(aLoc, srcKSet, strong);
     }
 
     public void visit_COPY(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv) {
@@ -518,6 +485,7 @@ public class PcodeVisitor {
         KSet srcPtrKSet = getKSet(src, inOutEnv, tmpEnv, pcode);
         KSet newSrcKSet = new KSet(dst.getSize() * 8);
         if (srcPtrKSet.isTop()) {
+            inOutEnv.markHeapGap("unresolved_load_target", com.bai.env.MemoryEvent.at(pcode, context, "gap"));
             setKSet(dst, KSet.getTop(), inOutEnv, tmpEnv, true);
             return;
         }
@@ -529,13 +497,20 @@ public class PcodeVisitor {
             }
             if (ptr.getRegion().isHeap()) {
                 // CWE416: Use After Free
-                MemoryCorruption.checkUseAfterFree(ptr, address, context, null, MemoryCorruption.TYPE_READ);
+                MemoryCorruption.checkUseAfterFree(ptr, inOutEnv, MemoryEvent.at(pcode, context, "read"), null, 0, MemoryCorruption.TYPE_READ, false);
             }
             if (ptr.getRegion().isHeap() || ptr.getRegion().isLocal()) {
                 // CWE125: Out-of-bounds Read
-                MemoryCorruption.checkOutOfBound(ptr, address, context, null, MemoryCorruption.TYPE_READ);
+                MemoryCorruption.checkOutOfBound(ptr, inOutEnv, address, context, null, MemoryCorruption.TYPE_READ);
             }
-            List<AbsVal> adjustedPtrs = Utils.adjustLocalAbsVal(ptr, context, srcPtrKSet.getBits());
+            var access = Utils.adjustLocalAbsVal(ptr, context, inOutEnv);
+            if (access.unresolved()) {
+                inOutEnv.markFlowGap("unresolved_caller_stack");
+                inOutEnv.markUnresolvedEffect("unresolved_caller_stack", MemoryEvent.at(pcode, context, "gap"));
+                newSrcKSet = KSet.getTop();
+                continue;
+            }
+            List<AbsVal> adjustedPtrs = access.targets();
             if (adjustedPtrs.isEmpty()) {
                 // not adjusted
                 newSrcKSet = loadPtr(ptr, newSrcKSet, inOutEnv, dst);
@@ -561,6 +536,7 @@ public class PcodeVisitor {
         KSet dstPtrKSet = getKSet(dst, inOutEnv, tmpEnv, pcode);
 
         if (dstPtrKSet.isTop()) {
+            inOutEnv.markUnresolvedEffect("unresolved_store_target", com.bai.env.MemoryEvent.at(pcode, context, "gap"));
             return;
         }
 
@@ -575,20 +551,31 @@ public class PcodeVisitor {
             }
             if (ptr.getRegion().isHeap()) {
                 // CWE416: Use After Free
-                MemoryCorruption.checkUseAfterFree(ptr, address, context, null, MemoryCorruption.TYPE_WRITE);
+                MemoryCorruption.checkUseAfterFree(ptr, inOutEnv, MemoryEvent.at(pcode, context, "write"), null, 0, MemoryCorruption.TYPE_WRITE, false);
             }
             if (ptr.getRegion().isHeap() || ptr.getRegion().isLocal()) {
                 // CWE787: Out-of-bounds Write check
-                MemoryCorruption.checkOutOfBound(ptr, address, context, null, MemoryCorruption.TYPE_WRITE);
+                MemoryCorruption.checkOutOfBound(ptr, inOutEnv, address, context, null, MemoryCorruption.TYPE_WRITE);
             }
             // Adjust local AbsVal after check.
-            List<AbsVal> adjustedPtrs = Utils.adjustLocalAbsVal(ptr, context, dstPtrKSet.getBits());
+            var access = Utils.adjustLocalAbsVal(ptr, context, inOutEnv);
+            if (access.unresolved()) {
+                inOutEnv.markFlowGap("unresolved_caller_stack");
+                inOutEnv.markUnresolvedEffect("unresolved_caller_stack", MemoryEvent.at(pcode, context, "gap"));
+                for (var cell : inOutEnv.getEnvMap()) {
+                    if (cell.getKey().getRegion().isLocal()) {
+                        inOutEnv.set(cell.getKey(), KSet.getTop(), true);
+                    }
+                }
+                continue;
+            }
+            List<AbsVal> adjustedPtrs = access.targets();
             if (adjustedPtrs.isEmpty()) {
-                storePtr(ptr, srcKSet, inOutEnv, tmpEnv, src);
+                storePtr(ptr, srcKSet, inOutEnv, tmpEnv, src, dstPtrKSet.isSingleton());
             } else {
                 // we still write on adjusted ptr, though it might indicate a stack overflow.
                 for (AbsVal adjustedPtr : adjustedPtrs) {
-                    storePtr(adjustedPtr, srcKSet, inOutEnv, tmpEnv, src);
+                    storePtr(adjustedPtr, srcKSet, inOutEnv, tmpEnv, src, dstPtrKSet.isSingleton() && adjustedPtrs.size() == 1);
                 }
             }
         }
@@ -620,13 +607,8 @@ public class PcodeVisitor {
             }
             KSet conditionKSet = getKSet(condition, inOutEnv, tmpEnv, pcode);
             if (!conditionKSet.isFalse()) {
-                AbsEnv oldEnv = context.getValueBefore(address);
-                AbsEnv res = oldEnv.join(inOutEnv);
-                if (res != null) {
-                    jumpOut = conditionKSet.isTrue();
-                    context.setValueBefore(address, res);
-                    context.insertToWorklist(address);
-                }
+                jumpOut = conditionKSet.isTrue();
+                context.propagateBefore(address, inOutEnv);
             }
             return;
         }
@@ -675,6 +657,10 @@ public class PcodeVisitor {
         final Address callSite = Utils.getAddress(pcode);
         Function callee = GlobalState.flatAPI.getFunctionAt(targetAddress);
 
+        if (callee == null) {
+            inOutEnv.markUnresolvedEffect("unresolved_direct_call", MemoryEvent.at(pcode, context, "gap"));
+            return;
+        }
         if (callee.isThunk()) {
             callee = callee.getThunkedFunction(true);
         }
@@ -700,15 +686,6 @@ public class PcodeVisitor {
             return;
         }
 
-        JImmutableTreeMap<ALoc, KSet> envMap = inOutEnv.getEnvMap();
-        for (JImmutableMap.Entry<ALoc, KSet> entry : envMap) {
-            KSet old = entry.getValue();
-            KSet adjusted = adjustLocalAbsVal(old);
-            if (adjusted != null) {
-                envMap = envMap.assign(entry.getKey(), adjusted);
-            }
-        }
-
         Context newContext = Context.getContext(context, callSite, callee);
         Logging.debug("New Context: " + newContext.toString());
 
@@ -717,8 +694,9 @@ public class PcodeVisitor {
             jumpOut = true;
         } else {
             ContextTransitionTable.getInstance().add(callSite, context);
-            boolean isUpdated = newContext.initContext(inOutEnv, false);
-            JImmutableMap<ALoc, KSet> exit = newContext.getExitValue();
+            var invocation = newContext.initContext(inOutEnv, false);
+            boolean isUpdated = invocation.updated();
+            AbsEnv exit = newContext.getExitValue(invocation);
             if (isUpdated) {
                 context.insertToWorklist(callSite);
                 switchContext = true;
@@ -728,7 +706,7 @@ public class PcodeVisitor {
                     Context.pushPending(context);
                     Context.pushActive(newContext);
                 }
-            } else if (exit.isEmpty()) {
+            } else if (exit == null) {
                 switchContext = true;
                 if (context.equals(newContext)) {
                     Context.pushActive(context);
@@ -737,7 +715,8 @@ public class PcodeVisitor {
                     Context.pushActive(newContext);
                 }
             } else {
-                for (JImmutableMap.Entry<ALoc, KSet> entry : exit) {
+                inOutEnv.applyLifetime(exit);
+                for (JImmutableMap.Entry<ALoc, KSet> entry : exit.getEnvMap()) {
                     if (GlobalState.config.getPreserveCalleeSavedReg()) {
                         // do not overwrite callee saved register
                         if (GlobalState.arch.isCalleeSavedRegister(entry.getKey())) {
@@ -760,6 +739,7 @@ public class PcodeVisitor {
         KSet targetKSet = getKSet(target, inOutEnv, tmpEnv, pcode);
 
         if (targetKSet.isTop()) {
+            inOutEnv.markUnresolvedEffect("unresolved_indirect_call", com.bai.env.MemoryEvent.at(pcode, context, "gap"));
             return;
         }
 
@@ -767,11 +747,13 @@ public class PcodeVisitor {
         Address callSite = Utils.getAddress(pcode);
         for (AbsVal targetVal : targetKSet) {
             if (!targetVal.getRegion().isGlobal() || targetVal.isBigVal()) {
+                inOutEnv.markUnresolvedEffect("unresolved_indirect_call_target", MemoryEvent.at(pcode, context, "gap"));
                 continue;
             }
             Address targetAddress = GlobalState.flatAPI.toAddr(targetVal.getValue());
             MemoryBlock block = GlobalState.flatAPI.getMemoryBlock(targetAddress);
             if (block == null || !targetAddress.isLoadedMemoryAddress()) {
+                inOutEnv.markUnresolvedEffect("unresolved_indirect_call_target", MemoryEvent.at(pcode, context, "gap"));
                 continue;
             }
             Function targetFunction = GlobalState.flatAPI.getFunctionAt(targetAddress);
@@ -780,11 +762,18 @@ public class PcodeVisitor {
                     targetFunction = targetFunction.getThunkedFunction(true);
                 }
                 Logging.debug("Adding indirect call to " + targetFunction);
+                if (targetFunction == null) {
+                    inOutEnv.markUnresolvedEffect("unresolved_indirect_call_target", MemoryEvent.at(pcode, context, "gap"));
+                    continue;
+                }
                 functionSet.add(Pair.of(targetFunction, targetAddress));
+            } else {
+                inOutEnv.markUnresolvedEffect("unresolved_indirect_call_target", MemoryEvent.at(pcode, context, "gap"));
             }
         }
 
         if (functionSet.isEmpty()) {
+            inOutEnv.markUnresolvedEffect("unresolved_indirect_call", com.bai.env.MemoryEvent.at(pcode, context, "gap"));
             return;
         }
 
@@ -801,25 +790,35 @@ public class PcodeVisitor {
         for (Pair<Function, Address> pair : functionSet) {
             Function callee = pair.getLeft();
             Address targetAddress = pair.getRight();
+            AbsEnv targetEnv = new AbsEnv(inOutEnv);
+            AbsEnv targetTmp = new AbsEnv(tmpEnv);
             Status status;
             if (callee.isExternal() || FunctionModelManager.isFunctionAddressMapped(targetAddress)) {
-                defineExternalFunctionSignature(pcode, inOutEnv, tmpEnv, callee);
+                defineExternalFunctionSignature(pcode, targetEnv, targetTmp, callee);
                 // CWE119, CWE416, CWE416, CWE476
-                MemoryCorruption.checkExternalCallParameters(pcode, inOutEnv, tmpEnv, context, callee);
-                status = invokeExternal(pcode, inOutEnv, tmpEnv, callee);
+                MemoryCorruption.checkExternalCallParameters(pcode, targetEnv, targetTmp, context, callee);
+                status = invokeExternal(pcode, targetEnv, targetTmp, callee);
                 if (status == null) {
                     continue;
+                }
+                if (!status.noReturn) {
+                    AbsEnv joinedTarget = resEnv.join(targetEnv);
+                    if (joinedTarget != null) { resEnv = joinedTarget; }
                 }
                 noReturn &= status.noReturn;
                 isExitEmpty |= status.isExitEmpty;
                 isFinished = isFinished & status.isFinished;
             } else if (FunctionModelManager.isStd(callee)) { // TODO: support mapping address to std model
-                defineStdFunctionSignature(pcode, inOutEnv, tmpEnv, callee);
+                defineStdFunctionSignature(pcode, targetEnv, targetTmp, callee);
                 // CWE119, CWE416, CWE416, CWE476
-                MemoryCorruption.checkExternalCallParameters(pcode, inOutEnv, tmpEnv, context, callee);
-                status = invokeStd(pcode, inOutEnv, tmpEnv, callee);
+                MemoryCorruption.checkExternalCallParameters(pcode, targetEnv, targetTmp, context, callee);
+                status = invokeStd(pcode, targetEnv, targetTmp, callee);
                 if (status == null) {
                     continue;
+                }
+                if (!status.noReturn) {
+                    AbsEnv joinedTarget = resEnv.join(targetEnv);
+                    if (joinedTarget != null) { resEnv = joinedTarget; }
                 }
                 noReturn &= status.noReturn;
                 isExitEmpty |= status.isExitEmpty;
@@ -828,7 +827,7 @@ public class PcodeVisitor {
                 Context newContext = Context.getContext(context, callSite, callee);
                 if (callee.hasNoReturn()) {
                     newContext.initContext(inOutEnv, false);
-                    noReturn = true;
+                    Context.pushActive(newContext);
                     isFinished &= true;
                     if (isSingleton) {
                         jumpOut = true;
@@ -837,18 +836,18 @@ public class PcodeVisitor {
                 } else {
                     noReturn &= false;
                     ContextTransitionTable.getInstance().add(callSite, context);
-                    boolean isUpdated = newContext.initContext(inOutEnv, false);
-                    JImmutableTreeMap<ALoc, KSet> exit = newContext.getExitValue();
+                    var invocation = newContext.initContext(inOutEnv, false);
+                    boolean isUpdated = invocation.updated();
+                    AbsEnv exit = newContext.getExitValue(invocation);
                     if (isUpdated) {
                         targets.add(newContext);
                         isFinished &= false;
                         isTotalUpdated |= true;
-                    } else if (exit.isEmpty()) {
+                    } else if (exit == null) {
                         targets.add(newContext);
                         isFinished &= false;
                         isExitEmpty |= true;
                     } else {
-                        isFinished = true;
                         AbsEnv tmp = resEnv.join(new AbsEnv(exit));
                         if (tmp != null) {
                             resEnv = tmp;
@@ -882,6 +881,7 @@ public class PcodeVisitor {
         }
 
         if (isFinished) {
+            inOutEnv.applyLifetime(resEnv);
             for (JImmutableTreeMap.Entry<ALoc, KSet> entry : resEnv.getEnvMap()) {
                 if (GlobalState.config.getPreserveCalleeSavedReg()) {
                     // do not overwrite callee saved register
@@ -905,9 +905,21 @@ public class PcodeVisitor {
             if (aLoc.isSP()) {
                 if (GlobalState.arch.isX86()) {
                     KSet spKSet = inOutEnv.get(aLoc);
-                    KSet adjustedKSet = adjustLocalAbsVal(spKSet);
-                    if (adjustedKSet != null) {
-                        inOutEnv.set(aLoc, adjustedKSet, true);
+                    if (spKSet.isNormal()) {
+                        KSet adjusted = new KSet(spKSet.getBits(), spKSet.getTaints());
+                        for (AbsVal pointer : spKSet) {
+                            var access = Utils.adjustLocalAbsVal(pointer, context, inOutEnv);
+                            if (access.unresolved()) {
+                                inOutEnv.markFlowGap("unresolved_caller_stack");
+                                adjusted = KSet.getTop(spKSet.getTaints());
+                                break;
+                            }
+                            if (access.targets().isEmpty()) { adjusted = adjusted.insert(pointer); }
+                            else {
+                                for (AbsVal target : access.targets()) { adjusted = adjusted.insert(target); }
+                            }
+                        }
+                        inOutEnv.set(aLoc, adjusted, true);
                     }
                 } else {
                     inOutEnv.set(aLoc, KSet.getBot(aLoc.getLen() * 8), true);
@@ -921,12 +933,7 @@ public class PcodeVisitor {
             }
         }
 
-        AbsEnv oldExitEnv = new AbsEnv(context.getExitValue());
-        AbsEnv resEnv = oldExitEnv.join(inOutEnv);
-        if (resEnv == null) {
-            return;
-        }
-        context.setExitValue(resEnv.getEnvMap());
+        if (!context.returnFrom(inOutEnv)) { return; }
         long[] callString = context.getCallString();
         Function[] callStringFunctions = context.getFuncs();
         Address lastCallSite = GlobalState.flatAPI.toAddr(callString[GlobalState.config.getCallStringK() - 1]);
@@ -1462,14 +1469,13 @@ public class PcodeVisitor {
         }
     }
 
-    public boolean visit(Address address) {
+    public boolean visit(Address address, AbsEnv inEnv) {
         Function func = GlobalState.flatAPI.getFunctionContaining(address);
         Instruction instruction = GlobalState.flatAPI.getInstructionAt(address);
         if (instruction == null) {
             return false;
         }
         String funcName = func == null ? "***" : func.toString();
-        AbsEnv inEnv = context.getValueBefore(address);
         Logging.debug("Visit Inst: " + instruction
                 + " @ " + Integer.toHexString((int) address.getOffset()) + " in " + funcName);
         AbsEnv outEnv = new AbsEnv(inEnv);
@@ -1491,7 +1497,7 @@ public class PcodeVisitor {
         }
         if (!jumpOut) {
             if (isCBranch) {
-                processCBranchNext(address, outEnv);
+                processCBranchNext(address, outEnv, tmpEnv);
                 isCBranch = false;
             } else {
                 processNext(address, outEnv);

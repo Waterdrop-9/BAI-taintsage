@@ -3,6 +3,7 @@ package com.bai.env.funcs.stdfuncs;
 
 import com.bai.env.ALoc;
 import com.bai.env.AbsEnv;
+import com.bai.env.MemoryEvent;
 import com.bai.env.AbsVal;
 import com.bai.env.Context;
 import com.bai.env.KSet;
@@ -85,7 +86,8 @@ public class MapModel extends CppStdModelBase<HashMap<AbsVal, AbsVal>> {
             for (AbsVal key : keyKSet) {
                 AbsVal tmpHeap = thisContainer.get(key);
                 if (tmpHeap == null) {
-                    Heap chunk = Heap.getHeap(Utils.getAddress(pcode), context, true);
+                    Heap chunk = Heap.getHeap(Utils.getAddress(pcode), context);
+                    inOutEnv.allocate(chunk, MemoryEvent.at(pcode, context, "allocation"));
                     thisContainer.put(key, AbsVal.getPtr(chunk));
                     tmpHeap = AbsVal.getPtr(chunk);
                 }

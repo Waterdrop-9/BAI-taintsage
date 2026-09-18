@@ -46,7 +46,7 @@ public class StrcatFunctionTest extends ARMProgramTestBase {
 
         // dst = normal, src = normal, taint from dst and src
         inOutEnv = new AbsEnv();
-        Heap heap1 = Heap.getHeap(Utils.getDefaultAddress(0x1010), mockContext, true);
+        Heap heap1 = Heap.getHeap(Utils.getDefaultAddress(0x1010), mockContext);
         KSet srcString = new KSet(32).insert(new AbsVal(0x41424344)).setTaints(TaintMap.getTaints(0x10));
         AbsVal srcPtr = new AbsVal(heap1, 0);
         KSet srcPtrKSet = new KSet(32).insert(srcPtr);

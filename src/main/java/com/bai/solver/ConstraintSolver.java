@@ -448,7 +448,8 @@ public class ConstraintSolver {
         if (ptr.isBigVal()) {
             return;
         }
-        if (!Utils.adjustLocalAbsVal(ptr, context, srcPtrKSet.getBits()).isEmpty()) {
+        var access = Utils.adjustLocalAbsVal(ptr, context, tmpEnv);
+        if (access.unresolved() || !access.targets().isEmpty()) {
             // skip adjusted case, because we do not support solving inter-procedural constraints
             return;
         }
@@ -492,7 +493,8 @@ public class ConstraintSolver {
         if (ptr.isBigVal()) {
             return;
         }
-        if (!Utils.adjustLocalAbsVal(ptr, context, dstPtrKSet.getBits()).isEmpty()) {
+        var access = Utils.adjustLocalAbsVal(ptr, context, tmpEnv);
+        if (access.unresolved() || !access.targets().isEmpty()) {
             // skip adjusted case, because we do not support solving inter-procedural constraints
             return;
         }

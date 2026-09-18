@@ -44,6 +44,7 @@ public class GlobalState {
         CFG.resetPool();
         TaintMap.reset();
         Logging.resetReports();
+        MemoryEvidenceExporter.reset();
         FunctionModelManager.resetConfig();
         FunctionModelManager.resetStdContainers();
         ContextTransitionTable.reset();

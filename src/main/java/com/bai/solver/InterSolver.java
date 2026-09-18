@@ -1,6 +1,7 @@
 package com.bai.solver;
 
 import com.bai.env.AbsEnv;
+import com.bai.util.AnalysisOutcome;
 import com.bai.env.Context;
 import com.bai.util.GlobalState;
 import ghidra.program.model.listing.Function;
@@ -27,14 +28,13 @@ public class InterSolver {
     /**
      * The driver function for the interprocedural analysis  
      */
-    public void run() {
-        Context mainContext = Context.getEntryContext(entry);
-        mainContext.initContext(new AbsEnv(), isMain);
-        int timeout = GlobalState.config.getTimeout();
-        if (timeout < 0) {
-            Context.mainLoop(mainContext);
-        } else {
-            Context.mainLoopTimeout(mainContext, timeout);
+    public AnalysisOutcome run() {
+        try {
+            Context mainContext = Context.getEntryContext(entry);
+            mainContext.initContext(new AbsEnv(), isMain);
+            return Context.mainLoopTimeout(mainContext, GlobalState.config.getTimeout());
+        } catch (RuntimeException error) {
+            return AnalysisOutcome.failed("initialization_exception", error.toString());
         }
     }
 

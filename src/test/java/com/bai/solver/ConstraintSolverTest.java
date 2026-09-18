@@ -876,7 +876,7 @@ public class ConstraintSolverTest extends ARMProgramTestBase {
                 Utils.getRegVarnode("r1"),
         };
         Context mockContext = Mockito.mock(Context.class);
-        Heap heap = Heap.getHeap(Utils.getDefaultAddress(0x1000), mockContext, true);
+        Heap heap = Heap.getHeap(Utils.getDefaultAddress(0x1000), mockContext);
 
         KSet ptrKSet = new KSet(32)
                 .insert(new AbsVal(heap, 0x30));
@@ -928,7 +928,7 @@ public class ConstraintSolverTest extends ARMProgramTestBase {
                 new Varnode(Utils.getConstantAddress(0x11223344), GlobalState.arch.getDefaultPointerSize())
         };
         Context mockContext = Mockito.mock(Context.class);
-        Heap heap = Heap.getHeap(Utils.getDefaultAddress(0x1000), mockContext, true);
+        Heap heap = Heap.getHeap(Utils.getDefaultAddress(0x1000), mockContext);
 
         KSet ptrKSet = new KSet(32)
                 .insert(new AbsVal(heap, 0x30));

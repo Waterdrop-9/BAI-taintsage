@@ -39,7 +39,7 @@ public class StrncpyFunctionTest extends ARMProgramTestBase {
         final ALoc dstALoc = ALoc.getALoc(mockStrncpy.getParameter(0).getLastStorageVarnode());
         final ALoc srcALoc = ALoc.getALoc(mockStrncpy.getParameter(1).getLastStorageVarnode());
         final ALoc n = ALoc.getALoc(mockStrncpy.getParameter(2).getLastStorageVarnode());
-        Heap heap = Heap.getHeap(GlobalState.flatAPI.toAddr(0x1122), mockContext, true);
+        Heap heap = Heap.getHeap(GlobalState.flatAPI.toAddr(0x1122), mockContext);
         AbsEnv inOutEnv;
         final AbsEnv tmpEnv = new AbsEnv();
         inOutEnv = new AbsEnv();

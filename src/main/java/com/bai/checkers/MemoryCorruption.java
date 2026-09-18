@@ -2,6 +2,10 @@
 package com.bai.checkers;
 
 import com.bai.env.AbsEnv;
+import com.bai.env.MemoryEvent;
+import com.bai.env.HeapLifetime;
+import com.bai.env.funcs.MemoryAccessEffects;
+import com.bai.env.funcs.MemoryEffectScope;
 import com.bai.env.AbsVal;
 import com.bai.env.Context;
 import com.bai.env.KSet;
@@ -20,9 +24,7 @@ import ghidra.program.model.data.FunctionDefinition;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.pcode.PcodeOp;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * CWE-119: Improper Restriction of Operations within the Bounds of a Memory Buffer <br>
@@ -50,27 +52,6 @@ public class MemoryCorruption {
     // this could reduce false positive of CWE787.
     private static int getSafeUnitCnt() {
         return GlobalState.arch.isX86() ? 1 : 0;
-    }
-
-    private static final Map<String, List<Integer>> nullPointerDeferenceCallWhiteListMap = new HashMap<>();
-
-    private static boolean shouldCheckNullPointerArg(String functionName, int idx) {
-        List<Integer> indexes = new ArrayList<>();
-        if (!nullPointerDeferenceCallWhiteListMap.containsKey(functionName)) {
-            ExternalFunctionBase functionModel = FunctionModelManager.getExternalFunction(functionName);
-            if (functionModel != null) {
-                indexes = functionModel.getPointerParameterIndexes();
-            }
-            nullPointerDeferenceCallWhiteListMap.put(functionName, indexes);
-        } else {
-            indexes = nullPointerDeferenceCallWhiteListMap.get(functionName);
-        }
-        for (int i : indexes) {
-            if (i == idx) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -123,65 +104,35 @@ public class MemoryCorruption {
      * @param type
      * @return
      */
-    public static boolean checkUseAfterFree(AbsVal ptr, Address address, Context context, Function callee, int type) {
-        assert ptr.getRegion().isHeap();
-        Heap chunk = (Heap) ptr.getRegion();
-        String details = null;
-        if (!chunk.isValid()) {
-            switch (type) {
-                case TYPE_READ:
-                    details = "Use After Free Read";
-                    break;
-                case TYPE_WRITE:
-                    details = "Use After Free Write";
-                    break;
-                case TYPE_ARGS:
-                    // skip double free cases.
-                    if (FreeFunction.getStaticSymbols().contains(callee.getName(false))) {
-                        return false;
-                    }
-                    details = "Use After Free when Call to " + callee.getName(false);
-                    break;
-                default: // nothing
-            }
-            details += " for chunk allocated at " + chunk.getAllocAddress()
-                    + ", first freed at " + chunk.getFreeSite() + ", when access";
-            CWEReport report = new CWEReport(CWE416, VERSION, details)
-                    .setAddress(address)
-                    .setContext(context);
-            Logging.report(report);
-            return false;
+    public static boolean checkUseAfterFree(AbsVal pointer, AbsEnv env, MemoryEvent event,
+            Function callee, int argumentIndex, int type, boolean conditional) {
+        Heap heap = (Heap) pointer.getRegion();
+        HeapLifetime state = env.getLifetime(heap);
+        if (state.getGaps().contains("allocation_state_missing")) {
+            env.markHeapGap(heap, "allocation_state_missing", event);
         }
-        return true;
+        if (state.getReleases().isEmpty()) { return true; }
+        if (conditional) { state = state.withGap("conditional_access_effect"); }
+        String access = type == TYPE_WRITE ? "write" : "read";
+        MemoryEvidenceExporter.record(CWE416, heap, state, event, callee, argumentIndex, access);
+        Logging.report(new CWEReport(CWE416, VERSION, "Use After Free " + access
+                + " for chunk allocated at " + heap.getAllocAddress())
+                .setAddress(event.getAddress()).setContext(event.getContext()));
+        return false;
     }
 
-    /**
-     * @hidden
-     * @param ptr
-     * @param address
-     * @param context
-     * @return
-     */
-    public static boolean checkDoubleFree(AbsVal ptr, Address address, Context context) {
-        return checkDoubleFree(ptr, address, context, null, 0);
-    }
-
-    public static boolean checkDoubleFree(AbsVal ptr, Address address, Context context,
+    public static boolean checkDoubleFree(AbsVal pointer, AbsEnv env, MemoryEvent event,
             Function callee, int argumentIndex) {
-        assert ptr.getRegion().isHeap();
-        Heap chunk = (Heap) ptr.getRegion();
-        if (!chunk.isValid()) {
-            String details = "Double Free for chunk allocated at " + chunk.getAllocAddress()
-                    + ", first freed at " + chunk.getFreeSite();
-            CWEReport report = new CWEReport(CWE415, VERSION, details)
-                    .setAddress(address)
-                    .setContext(context)
-                    .setStructuredEvidence(MemoryEvidenceExporter.doubleFreeEvidence(
-                            chunk, address, context, callee, argumentIndex));
-            Logging.report(report);
-            return false;
+        Heap heap = (Heap) pointer.getRegion();
+        HeapLifetime state = env.getLifetime(heap);
+        if (state.getGaps().contains("allocation_state_missing")) {
+            env.markHeapGap(heap, "allocation_state_missing", event);
         }
-        return true;
+        if (pointer.isBigVal() || pointer.getOffset() != 0 || state.getReleases().isEmpty()) { return true; }
+        MemoryEvidenceExporter.record(CWE415, heap, state, event, callee, argumentIndex, "release");
+        Logging.report(new CWEReport(CWE415, VERSION, "Double Free for chunk allocated at " + heap.getAllocAddress())
+                .setAddress(event.getAddress()).setContext(event.getContext()));
+        return false;
     }
 
     private static boolean checkHeapOutOfBound(AbsVal ptr, Address address, Context context, Function callee,
@@ -250,11 +201,11 @@ public class MemoryCorruption {
      * @param type
      * @return
      */
-    public static boolean checkOutOfBound(AbsVal ptr, Address address, Context context, Function callee, int type) {
+    public static boolean checkOutOfBound(AbsVal ptr, AbsEnv env, Address address, Context context, Function callee, int type) {
         assert ptr.getRegion().isHeap() || ptr.getRegion().isLocal();
         if (ptr.getRegion().isHeap()) {
             Heap chunk = (Heap) ptr.getRegion();
-            if (chunk.isValid()) {
+            if (env.getLifetime(chunk).isMayLive()) {
                 return checkHeapOutOfBound(ptr, address, context, callee, type);
             }
         } else if (ptr.getRegion().isLocal()) {
@@ -274,58 +225,72 @@ public class MemoryCorruption {
      */
     public static boolean checkExternalCallParameters(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv,
             Context context, Function calleeFunc) {
-        boolean isCheckPasss = true;
-        Address address = Utils.getAddress(pcode);
-        String functionName = calleeFunc.getName(false);
-        if (FreeFunction.getStaticSymbols().contains(functionName)) {
-            KSet pKSet = ExternalFunctionBase.getParamKSet(calleeFunc, 0, inOutEnv);
-            if (!pKSet.isNormal()) {
-                return false;
-            }
-            for (AbsVal argAbsVal : pKSet) {
-                if (!argAbsVal.getRegion().isHeap()) {
-                    continue;
-                }
-                isCheckPasss |= checkDoubleFree(argAbsVal, address, context, calleeFunc, 0);
-                if (!isCheckPasss) { // stop checking once detected.
-                    return isCheckPasss;
-                }
-            }
-        }
-
-        int paramCount;
-        Address callSite = Utils.getAddress(pcode);
-        FunctionDefinition signature = VarArgsFunctionBase.getVarArgsSignature(callSite);
-        if (signature == null) {
-            signature = (FunctionDefinition) calleeFunc.getSignature();
-            paramCount = calleeFunc.getParameterCount();
-        } else {
-            paramCount = signature.getArguments().length;
-        }
-
-        for (int i = 0; i < paramCount; i++) {
-            KSet pKset = ExternalFunctionBase.getVarArgsParamKSet(calleeFunc, signature, i, inOutEnv);
-            if (!pKset.isNormal()) {
-                continue;
-            }
-            if (shouldCheckNullPointerArg(functionName, i)) {
-                isCheckPasss |= MemoryCorruption.checkNullPointerDereference(pKset, address, context, calleeFunc,
-                        TYPE_ARGS, i);
-            }
-            for (AbsVal argAbsVal : pKset) {
-                boolean hasUAF = false;
-                if (argAbsVal.getRegion().isHeap()) {
-                    hasUAF = !checkUseAfterFree(argAbsVal, address, context, calleeFunc, TYPE_ARGS);
-                    isCheckPasss |= !hasUAF;
-                }
-                if (!hasUAF && !argAbsVal.getRegion().isGlobal()) {
-                    isCheckPasss |= checkOutOfBound(argAbsVal, address, context, calleeFunc, TYPE_ARGS);
-                    if (!isCheckPasss) { // stop checking once detected;
-                        return isCheckPasss;
+        boolean passed = true;
+        String name = calleeFunc.getName(false);
+        if (FreeFunction.getStaticSymbols().contains(name) || name.equals("realloc")) {
+            KSet pointers = ExternalFunctionBase.getParamKSet(calleeFunc, 0, inOutEnv);
+            if (!pointers.isNormal()) { inOutEnv.markUnresolvedEffect("unresolved_release_target", MemoryEvent.at(pcode, context, "gap")); }
+            else {
+                for (AbsVal pointer : pointers) {
+                    if (pointer.getRegion().isHeap()) {
+                        passed &= checkDoubleFree(pointer, inOutEnv, MemoryEvent.at(pcode, context, "release"), calleeFunc, 0);
                     }
                 }
             }
         }
-        return isCheckPasss;
+        MemoryAccessEffects.Result effects = MemoryAccessEffects.resolve(pcode, inOutEnv, calleeFunc);
+        FunctionDefinition signature = VarArgsFunctionBase.getVarArgsSignature(Utils.getAddress(pcode));
+        int parameters = signature == null ? calleeFunc.getParameterCount() : signature.getArguments().length;
+        List<String> reasons = new ArrayList<>(effects.getGaps());
+        if (FunctionModelManager.getExternalFunction(calleeFunc.getName()) == null
+                && !FunctionModelManager.isStd(calleeFunc)) {
+            reasons.add("unmodeled_call_transfer:" + calleeFunc.getName());
+        }
+        if (!reasons.isEmpty()) {
+            List<KSet> roots = new ArrayList<>();
+            if (calleeFunc.getSignatureSource() == null
+                    || calleeFunc.getSignatureSource() == ghidra.program.model.symbol.SourceType.DEFAULT
+                    || (calleeFunc.hasVarArgs() && signature == null)) {
+                roots.add(KSet.getTop());
+            }
+            for (int i = 0; i < parameters; i++) {
+                roots.add(signature == null ? ExternalFunctionBase.getParamKSet(calleeFunc, i, inOutEnv)
+                        : ExternalFunctionBase.getVarArgsParamKSet(calleeFunc, signature, i, inOutEnv));
+            }
+            MemoryEffectScope.Result scope = MemoryEffectScope.resolve(inOutEnv, roots, inOutEnv.getEscapedHeaps());
+            for (Heap heap : scope.getHeaps()) {
+                for (String gap : reasons) { inOutEnv.markHeapGap(heap, gap, MemoryEvent.at(pcode, context, "gap")); }
+            }
+            inOutEnv.markEscaped(scope.getHeaps());
+            for (String gap : reasons) {
+                if (scope.isUnresolved()) { inOutEnv.markUnresolvedEffect(gap, MemoryEvent.at(pcode, context, "gap")); }
+                else if (scope.getHeaps().isEmpty()) { inOutEnv.markHeapGap(gap, MemoryEvent.at(pcode, context, "gap")); }
+            }
+        }
+        for (MemoryAccessEffects.Access access : effects.getAccesses()) {
+            int i = access.getArgumentIndex();
+            KSet pointers = signature == null ? ExternalFunctionBase.getParamKSet(calleeFunc, i, inOutEnv)
+                    : ExternalFunctionBase.getVarArgsParamKSet(calleeFunc, signature, i, inOutEnv);
+            if (!pointers.isNormal()) {
+                if (access.getKind() == MemoryAccessEffects.Kind.WRITE) {
+                    inOutEnv.markUnresolvedEffect("unresolved_access_argument", MemoryEvent.at(pcode, context, "gap"));
+                } else {
+                    inOutEnv.markHeapGap("unresolved_access_argument", MemoryEvent.at(pcode, context, "gap"));
+                }
+                continue;
+            }
+            int type = access.getKind() == MemoryAccessEffects.Kind.WRITE ? TYPE_WRITE : TYPE_READ;
+            MemoryEvent event = MemoryEvent.at(pcode, context, type == TYPE_WRITE ? "write" : "read");
+            passed &= checkNullPointerDereference(pointers, event.getAddress(), context, calleeFunc, TYPE_ARGS, i);
+            for (AbsVal pointer : pointers) {
+                if (pointer.getRegion().isHeap()) {
+                    passed &= checkUseAfterFree(pointer, inOutEnv, event, calleeFunc, i, type, access.isConditional());
+                }
+                if (pointer.getRegion().isHeap() || pointer.getRegion().isLocal()) {
+                    passed &= checkOutOfBound(pointer, inOutEnv, event.getAddress(), context, calleeFunc, type);
+                }
+            }
+        }
+        return passed;
     }
 }

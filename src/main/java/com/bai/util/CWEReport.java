@@ -6,7 +6,6 @@ import com.google.errorprone.annotations.CheckReturnValue;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import java.util.Objects;
-import java.util.Map;
 import org.apache.logging.log4j.message.Message;
 
 /**
@@ -19,18 +18,6 @@ public class CWEReport implements Message {
     private String details;
     private Address address;
     private Context context;
-    private Map<String, Object> structuredEvidence;
-
-    public Map<String, Object> getStructuredEvidence() {
-        return structuredEvidence;
-    }
-
-    @CheckReturnValue
-    public CWEReport setStructuredEvidence(Map<String, Object> evidence) {
-        this.structuredEvidence = evidence;
-        return this;
-    }
-
     public CWEReport(String cwe, String version, String details) {
         this.cwe = cwe;
         this.version = version;

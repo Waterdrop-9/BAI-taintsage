@@ -1,6 +1,11 @@
 package com.bai.env;
 
 import ghidra.program.model.address.Address;
+import com.bai.env.region.Heap;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.Set;
+import java.util.HashSet;
 import ghidra.program.model.address.AddressOutOfBoundsException;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.mem.MemoryAccessException;
@@ -18,6 +23,11 @@ import org.javimmutable.collections.tree.JImmutableTreeMap;
 public class AbsEnv {
 
     private JImmutableTreeMap<ALoc, KSet> envMap;
+    private Map<Heap, HeapLifetime> lifetimes = Map.of();
+    private Set<Heap> escapedHeaps = Set.of();
+    private Set<Integer> callInputs = Set.of();
+    private KSet callerStack;
+    private Set<String> flowGaps = Set.of();
 
     /**
      * Constructor for an empty abstract environment
@@ -31,15 +41,13 @@ public class AbsEnv {
      */
     public AbsEnv(AbsEnv other) {
         envMap = other.envMap;
+        lifetimes = other.lifetimes;
+        escapedHeaps = other.escapedHeaps;
+        callInputs = other.callInputs;
+        callerStack = other.callerStack;
+        flowGaps = other.flowGaps;
     }
 
-
-    /**
-     * Constructor with an inner map
-     */
-    public AbsEnv(JImmutableTreeMap<ALoc, KSet> envMap) {
-        this.envMap = envMap;
-    }
 
     /**
      * Getter for the inner map
@@ -58,11 +66,117 @@ public class AbsEnv {
         for (Entry<ALoc, KSet> entry : other.envMap) {
             res.set(entry.getKey(), entry.getValue(), false);
         }
-        if (!res.envMap.equals(this.envMap)) {
+        Map<Heap, HeapLifetime> joined = new HashMap<>(lifetimes);
+        other.lifetimes.forEach((heap, state) -> joined.merge(heap, state, HeapLifetime::join));
+        res.lifetimes = Map.copyOf(joined);
+        Set<Heap> escaped = new HashSet<>(escapedHeaps);
+        escaped.addAll(other.escapedHeaps);
+        res.escapedHeaps = Set.copyOf(escaped);
+        Set<Integer> inputs = new HashSet<>(callInputs);
+        inputs.addAll(other.callInputs);
+        res.callInputs = Set.copyOf(inputs);
+        if (callerStack == null) { res.callerStack = other.callerStack; }
+        else if (other.callerStack != null) {
+            KSet stack = callerStack.join(other.callerStack);
+            if (stack != null) { res.callerStack = stack; }
+        }
+        Set<String> gaps = new HashSet<>(flowGaps);
+        gaps.addAll(other.flowGaps);
+        res.flowGaps = Set.copyOf(gaps);
+        if (inputs.size() > 1) { res.markFlowGap("call_input_correlation_lost"); }
+        if (!res.equals(this)) {
             return res;
         }
         // unchanged
         return null;
+    }
+
+    @Override public boolean equals(Object other) {
+        if (!(other instanceof AbsEnv)) { return false; }
+        AbsEnv state = (AbsEnv) other;
+        return sameValues(state) && callInputs.equals(state.callInputs)
+                && java.util.Objects.equals(callerStack, state.callerStack);
+    }
+
+    @Override public int hashCode() { return java.util.Objects.hash(envMap, lifetimes, escapedHeaps, callInputs, flowGaps, callerStack); }
+
+    public boolean sameValues(AbsEnv other) {
+        return envMap.equals(other.envMap) && lifetimes.equals(other.lifetimes)
+                && escapedHeaps.equals(other.escapedHeaps) && flowGaps.equals(other.flowGaps);
+    }
+
+    public KSet getCallerStack() { return callerStack; }
+
+    public void setCallerStack(KSet stack) { callerStack = stack; }
+
+    public Set<Integer> getCallInputs() { return callInputs; }
+
+    public void setCallInputs(Set<Integer> inputs) { callInputs = Set.copyOf(inputs); }
+
+    public void markFlowGap(String reason) {
+        Set<String> gaps = new HashSet<>(flowGaps);
+        gaps.add(reason);
+        flowGaps = Set.copyOf(gaps);
+    }
+
+    public HeapLifetime getLifetime(Heap heap) {
+        HeapLifetime state = lifetimes.getOrDefault(heap, HeapLifetime.unknown());
+        for (String gap : flowGaps) { state = state.withGap(gap); }
+        return state;
+    }
+
+    public Set<Heap> getEscapedHeaps() { return escapedHeaps; }
+
+    public void markEscaped(Set<Heap> heaps) {
+        Set<Heap> escaped = new HashSet<>(escapedHeaps);
+        escaped.addAll(heaps);
+        escapedHeaps = Set.copyOf(escaped);
+    }
+
+    public void markUnresolvedEffect(String reason, MemoryEvent event) {
+        for (Heap heap : lifetimes.keySet()) { markHeapGap(heap, "unresolved_scope:" + reason); }
+        com.bai.util.MemoryEvidenceExporter.recordGap(reason, null, event);
+    }
+
+    public void allocate(Heap heap, MemoryEvent event) {
+        HeapLifetime previous = lifetimes.get(heap);
+        HeapLifetime state = HeapLifetime.allocated(event);
+        if (previous != null) {
+            state = previous.join(state).withGap("allocation_instances_merged");
+            com.bai.util.MemoryEvidenceExporter.recordGap("allocation_instances_merged", heap, event);
+        }
+        Map<Heap, HeapLifetime> next = new HashMap<>(lifetimes);
+        next.put(heap, state);
+        lifetimes = Map.copyOf(next);
+    }
+
+    public void release(Heap heap, MemoryEvent event, boolean strong) {
+        Map<Heap, HeapLifetime> next = new HashMap<>(lifetimes);
+        next.put(heap, getLifetime(heap).release(event, strong));
+        lifetimes = Map.copyOf(next);
+    }
+
+    public void markHeapGap(Heap heap, String reason) {
+        Map<Heap, HeapLifetime> next = new HashMap<>(lifetimes);
+        next.put(heap, getLifetime(heap).withGap(reason));
+        lifetimes = Map.copyOf(next);
+    }
+
+    public void markHeapGap(Heap heap, String reason, MemoryEvent event) {
+        markHeapGap(heap, reason);
+        com.bai.util.MemoryEvidenceExporter.recordGap(reason, heap, event);
+    }
+
+    public void markHeapGap(String reason, MemoryEvent event) {
+        com.bai.util.MemoryEvidenceExporter.recordGap(reason, null, event);
+    }
+
+    public void applyLifetime(AbsEnv other) {
+        lifetimes = other.lifetimes;
+        escapedHeaps = other.escapedHeaps;
+        Set<String> gaps = new HashSet<>(flowGaps);
+        gaps.addAll(other.flowGaps);
+        flowGaps = Set.copyOf(gaps);
     }
 
     private void setEmptyALoc(ALoc aLoc, KSet oldKSet, KSet newKSet, boolean isStrongUpdate) {

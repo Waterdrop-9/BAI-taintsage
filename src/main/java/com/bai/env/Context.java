@@ -18,16 +18,9 @@ import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import com.bai.util.GlobalState;
 import java.util.Stack;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
-import org.apache.commons.lang3.exception.ExceptionUtils;
-import org.javimmutable.collections.JImmutableSet;
-import org.javimmutable.collections.tree.JImmutableTreeMap;
+import com.bai.util.AnalysisOutcome;
 
 
 /** Context **/
@@ -36,6 +29,19 @@ public class Context {
     private static final Map<Context, Context> pool = new HashMap<>();
 
     private static Context current;
+    private static Long deadlineNanos;
+
+    private static void checkDeadline() {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new AnalysisInterrupted();
+        }
+        if (deadlineNanos != null && System.nanoTime() - deadlineNanos >= 0) {
+            throw new AnalysisTimedOut();
+        }
+    }
+
+    private static final class AnalysisTimedOut extends RuntimeException { }
+    private static final class AnalysisInterrupted extends RuntimeException { }
 
     private static Stack<Context> active = new Stack<>();
 
@@ -47,13 +53,13 @@ public class Context {
 
     private Function[] funcs = new Function[GlobalState.config.getCallStringK()];
 
-    private final Map<Address, AbsEnv> inValues = new HashMap<>();
+    private final Map<Address, AbsEnvPartitions> inValues = new HashMap<>();
 
     private final Map<Address, AbsEnv> outValues = new HashMap<>();
 
-    private KSet oldSpKSet = new KSet(GlobalState.arch.getDefaultPointerSize() * 8);
+    private final ContextInputs inputs = new ContextInputs(AbsEnvPartitions.DEFAULT_LIMIT);
 
-    private JImmutableTreeMap<ALoc, KSet> exitValue = JImmutableTreeMap.of();
+    public record Invocation(int input, boolean updated) { }
 
     private Worklist worklist;
 
@@ -72,7 +78,9 @@ public class Context {
      * Get a map with addresses and their "before" abstract environments under this context
      */
     public Map<Address, AbsEnv> getAbsEnvIn() {
-        return inValues;
+        Map<Address, AbsEnv> joined = new HashMap<>();
+        inValues.forEach((address, states) -> joined.put(address, states.joined()));
+        return Map.copyOf(joined);
     }
 
     /**
@@ -111,26 +119,18 @@ public class Context {
         return pool;
     }
 
-    /**
-     * Get exit value of this context (i.e., return value)
-     */
-    public JImmutableTreeMap<ALoc, KSet> getExitValue() {
-        return exitValue;
-    }
+    public AbsEnv getExitValue(Invocation invocation) { return inputs.getExit(invocation.input()); }
 
-    /**
-     * Set exit value of this context, generally for return instructions
-     */
-    public void setExitValue(JImmutableTreeMap<ALoc, KSet> exitValue) {
-        this.exitValue = exitValue;
-    }
+    public boolean returnFrom(AbsEnv state) { return inputs.returnFrom(state); }
 
     /**
      * Set the "before" abstract environment for an address under this context
      */
     public void setValueBefore(Address addr, AbsEnv env) {
         assert (env != null);
-        inValues.put(addr, env);
+        AbsEnvPartitions states = new AbsEnvPartitions(AbsEnvPartitions.DEFAULT_LIMIT);
+        states.add(env);
+        inValues.put(addr, states);
     }
 
     /**
@@ -145,10 +145,26 @@ public class Context {
      * Get the abstract environment before an address under this context
      */
     public AbsEnv getValueBefore(Address addr) {
-        if (inValues.containsKey(addr)) {
-            return inValues.get(addr);
+        AbsEnvPartitions states = inValues.get(addr);
+        return states == null ? new AbsEnv() : states.joined();
+    }
+
+    public List<AbsEnv> getStatesBefore(Address address) {
+        AbsEnvPartitions states = inValues.get(address);
+        return states == null ? List.of() : states.states();
+    }
+
+    public boolean propagateBefore(Address address, AbsEnv env) {
+        AbsEnvPartitions states = inValues.computeIfAbsent(address,
+                ignored -> new AbsEnvPartitions(AbsEnvPartitions.DEFAULT_LIMIT));
+        boolean wasSummarized = states.isSummarized();
+        if (!states.add(env)) { return false; }
+        if (!wasSummarized && states.isSummarized()) {
+            com.bai.util.MemoryEvidenceExporter.recordGap("path_partition_limit", null,
+                    new MemoryEvent(address, this, -1, "state_merge"));
         }
-        return new AbsEnv();
+        insertToWorklist(address);
+        return true;
     }
 
     /**
@@ -161,35 +177,13 @@ public class Context {
         return null;
     }
 
-    /**
-     * @hidden
-     */
-    public KSet getOldSpKSet() {
-        return oldSpKSet;
-    }
-
-    private void updateOldSp(KSet kSet) {
-        KSet union = oldSpKSet.join(kSet);
-        oldSpKSet = (union == null) ? oldSpKSet : union;
-        if (oldSpKSet.isTop()) {
-            Logging.warn("K is too small to hold old stack frames, please consider increase K value: Context("
-                    + this.toString() + ")");
-        }
+    public KSet getOldSpKSet(AbsEnv state) {
+        return state.getCallerStack() == null ? new KSet(GlobalState.arch.getDefaultPointerSize() * 8)
+                : state.getCallerStack();
     }
 
     private void updateSP(AbsEnv inOutEnv) {
         ALoc spALoc = ALoc.getSPALoc();
-        KSet oldSpKSet = inOutEnv.get(spALoc);
-        if (oldSpKSet.isNormal()) {
-            JImmutableSet<AbsVal> filteredSet = oldSpKSet.getInnerSet();
-            for (AbsVal absVal : filteredSet) {
-                if (!absVal.getRegion().isLocal()) {
-                    filteredSet = filteredSet.delete(absVal);
-                }
-            }
-            oldSpKSet = new KSet(filteredSet, oldSpKSet.getBits());
-            updateOldSp(oldSpKSet);
-        }
         Local local = Local.getLocal(getFunction());
         KSet spKSet = new KSet(GlobalState.arch.getDefaultPointerSize() * 8);
         spKSet = spKSet.insert(AbsVal.getPtr(local));
@@ -215,7 +209,6 @@ public class Context {
 
         Local entryLocal = Local.getLocal(GlobalState.eEntryFunction);
 
-        oldSpKSet = oldSpKSet.insert(AbsVal.getPtr(entryLocal));
         // Temporarily set sp point to start
         ALoc spALoc = ALoc.getSPALoc();
         final KSet mainSP = absEnv.get(spALoc);
@@ -264,25 +257,35 @@ public class Context {
      * Initialize necessary dataflow facts inside a created context
      * @param caller New abstract environment before entrance into this context
      * @param isMain Indicate whether this is a context for conventional "main" functions
-     * @return True if the abstract environment before the context entry has been changed, false otherwise 
      */
-    public boolean initContext(AbsEnv caller, boolean isMain) {
+    public Invocation initContext(AbsEnv caller, boolean isMain) {
         Function callee = getFunction();
         Address entry = callee.getEntryPoint();
         AbsEnv env = new AbsEnv(caller);
+        if (isMain) {
+            KSet entryStack = new KSet(GlobalState.arch.getDefaultPointerSize() * 8)
+                    .insert(AbsVal.getPtr(Local.getLocal(GlobalState.eEntryFunction)));
+            KSet joined = env.get(ALoc.getSPALoc()).join(entryStack);
+            if (joined != null) { env.set(ALoc.getSPALoc(), joined, true); }
+        }
+        int input = inputs.register(env);
+        env.setCallInputs(java.util.Set.of(input));
+        env.setCallerStack(inputs.getCallerStack(env.getCallInputs(), GlobalState.arch.getDefaultPointerSize() * 8));
+        if (env.getCallerStack().isTop()) {
+            env.markFlowGap("unresolved_caller_stack");
+            com.bai.util.MemoryEvidenceExporter.recordGap("unresolved_caller_stack", null,
+                    new MemoryEvent(entry, this, -1, "gap"));
+        }
+        if (inputs.isOverflow(input)) {
+            env.markFlowGap("call_input_partition_limit");
+            com.bai.util.MemoryEvidenceExporter.recordGap("call_input_partition_limit", null,
+                    new MemoryEvent(entry, this, -1, "state_merge"));
+        }
         updateSP(env);
         if (isMain) {
             prepareMainAbsEnv(env, callee);
         }
-        AbsEnv oldInit = getValueBefore(entry);
-
-        AbsEnv res = oldInit.join(env);
-        if (res != null) {
-            setValueBefore(entry, res);
-            insertToWorklist(entry);
-            return true;
-        }
-        return false;
+        return new Invocation(input, propagateBefore(entry, env));
     }
 
     /**
@@ -299,12 +302,15 @@ public class Context {
      * Iterative process for each address inside worklist of this context
      */
     public void loop() {
-        PcodeVisitor visitor = new PcodeVisitor(this);
         while (!worklist.isEmpty()) {
+            checkDeadline();
             Address addr = worklist.pop();
-            if (visitor.visit(addr)) {
-                return;
+            boolean switchRequested = false;
+            for (AbsEnv state : getStatesBefore(addr)) {
+                checkDeadline();
+                switchRequested |= new PcodeVisitor(this).visit(addr, state);
             }
+            if (switchRequested) { return; }
         }
     }
 
@@ -461,6 +467,7 @@ public class Context {
     public static void mainLoop(Context entryCtx) {
         current = entryCtx;
         while (current != null) {
+            checkDeadline();
             current.loop();
             current = popContext();
             if (current != null) {
@@ -473,20 +480,23 @@ public class Context {
      * @hidden
      * Main entry to drive interprocedural analysis with an entry context and a timer
      */    
-    public static void mainLoopTimeout(Context entryCtx, long timeout) {
-        Logging.info("Analyze started at " + java.time.LocalTime.now() + " with timout " + timeout + "s");
-        Runnable task = () -> mainLoop(entryCtx);
-        ExecutorService executor = Executors.newSingleThreadExecutor();
-        Future<?> future = executor.submit(task);
+    public static AnalysisOutcome mainLoopTimeout(Context entryCtx, long timeout) {
+        deadlineNanos = timeout < 0 ? null : System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout);
         try {
-            future.get(timeout, TimeUnit.SECONDS);
-        } catch (InterruptedException | ExecutionException e) {
-            Logging.error(ExceptionUtils.getStackTrace(e));
-        } catch (TimeoutException e) {
-            Logging.error("Timeout at " + java.time.LocalTime.now() + ". Analysis terminated...");
-            future.cancel(true);
+            checkDeadline();
+            mainLoop(entryCtx);
+            checkDeadline();
+            return AnalysisOutcome.completed();
+        } catch (AnalysisTimedOut error) {
+            return AnalysisOutcome.partial("timeout", "Solver deadline exceeded");
+        } catch (AnalysisInterrupted error) {
+            return AnalysisOutcome.partial("interrupted", "Solver thread interrupted");
+        } catch (RuntimeException error) {
+            Logging.error(error.toString());
+            return AnalysisOutcome.partial("solver_exception", error.toString());
+        } finally {
+            deadlineNanos = null;
         }
-        executor.shutdown();
     }
 
 }

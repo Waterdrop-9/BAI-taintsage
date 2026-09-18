@@ -151,45 +151,20 @@ public class Utils {
         return success;
     }
 
-    /**
-     * Adjust local AbsVal pointer to handle arguments passed on stack.
-     * For example, AbsVals with negative offset are pointing to local variables in callee's stack frame,
-     * but AbsVals with positive offset are pointing to local variables in caller's stack frame.
-     * Because oldSp may have multiple value, so one AbsVal may turn into multiple AbsVal after adjustment.
-     * <pre>
-     * ┌─────────────┐
-     * │    callee   │
-     * │ stack frame │-12
-     * │             │-8
-     * │             │-4
-     * ├─────────────┤0 - old sp
-     * │    caller   │+4
-     * │ stack frame │+8
-     * │             │+12
-     * │             │
-     * └─────────────┘
-     * </pre>
-     *
-     * @param absVal the AbsVal.
-     * @param bits the bit length.
-     * @return return a List of adjusted AbsVal.
-     */
-    public static List<AbsVal> adjustLocalAbsVal(AbsVal absVal, Context context, int bits) {
-        List<AbsVal> res = new ArrayList<>();
-        if (context == null || context.getOldSpKSet() == null) {
-            return res;
+    public record LocalAccess(List<AbsVal> targets, boolean unresolved) { }
+
+    public static LocalAccess adjustLocalAbsVal(AbsVal absVal, Context context, com.bai.env.AbsEnv state) {
+        if (context == null || !absVal.getRegion().isLocal() || absVal.isBigVal() || absVal.getOffset() < 0
+                || ((com.bai.env.region.Local) absVal.getRegion()).getFunction() != context.getFunction()) {
+            return new LocalAccess(List.of(), false);
         }
-        if (context.getOldSpKSet().isTop()) {
-            return res;
+        KSet stack = context.getOldSpKSet(state);
+        if (stack.isTop()) { return new LocalAccess(List.of(), true); }
+        List<AbsVal> targets = new ArrayList<>();
+        for (AbsVal oldSp : stack) {
+            targets.add(AbsVal.getPtr(oldSp.getRegion(), oldSp.getValue() + absVal.getOffset()));
         }
-        for (AbsVal oldSp : context.getOldSpKSet()) {
-            if (absVal.getRegion().isLocal() && absVal.getOffset() >= 0 && !absVal.isBigVal()) {
-                AbsVal adjusted = AbsVal.getPtr(oldSp.getRegion(),
-                        oldSp.getValue() + absVal.getOffset());
-                res.add(adjusted);
-            }
-        }
-        return res;
+        return new LocalAccess(List.copyOf(targets), false);
     }
 
     /**

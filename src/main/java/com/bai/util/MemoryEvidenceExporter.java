@@ -1,194 +1,167 @@
-// Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 package com.bai.util;
 
-import com.bai.env.Context;
+import com.bai.env.HeapLifetime;
+import com.bai.env.MemoryEvent;
 import com.bai.env.region.Heap;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
-/** Export the stable Memory Evidence Contract without exposing BinAbs abstract state. */
 public final class MemoryEvidenceExporter {
-
     public static final String OUTPUT_ENV = "TAINTSAGE_BINABS_EVIDENCE_PATH";
-    public static final String SCHEMA_VERSION = "taintsage.memory_evidence.v1";
+    public static final String SCHEMA_VERSION = "taintsage.memory_evidence.v2";
+    private static final ObjectMapper MAPPER = new ObjectMapper().enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+    private static final Map<String, Map<String, Object>> CANDIDATES = new TreeMap<>();
+    private static final Map<String, Map<String, Object>> GAPS = new TreeMap<>();
 
-    private MemoryEvidenceExporter() {
+    private MemoryEvidenceExporter() { }
+
+    public static void reset() {
+        CANDIDATES.clear();
+        GAPS.clear();
     }
 
-    public static Map<String, Object> doubleFreeEvidence(
-            Heap chunk, Address laterRelease, Context laterContext,
-            Function callee, int argumentIndex) {
-        Map<String, Object> object = new LinkedHashMap<>();
-        object.put("kind", "heap");
-        object.put("allocation_site", programPoint(chunk.getAllocAddress()));
-        object.put("allocation_context", contextFrames(chunk.getContext()));
+    public static List<Map<String, Object>> getCandidates() { return List.copyOf(CANDIDATES.values()); }
+    public static List<Map<String, Object>> getAnalysisGaps() { return List.copyOf(GAPS.values()); }
 
-        Map<String, Object> first = new LinkedHashMap<>();
-        first.put("kind", "release");
-        first.put("role", "first_release");
-        first.put("program_point", programPoint(chunk.getFreeSite()));
-        first.put("context", contextFrames(chunk.getFreeContext()));
-
-        Map<String, Object> query = new LinkedHashMap<>();
-        query.put("kind", "call_argument");
-        query.put("callee", callee == null ? "" : callee.getName(false));
-        query.put("argument_index", argumentIndex);
-
-        Map<String, Object> later = new LinkedHashMap<>();
-        later.put("kind", "release");
-        later.put("role", "later_release");
-        later.put("program_point", programPoint(laterRelease));
-        later.put("context", contextFrames(laterContext));
-        later.put("query", query);
-
-        List<String> unknown = new ArrayList<>();
-        collectMissingPoint("allocation_site", object.get("allocation_site"), unknown);
-        collectMissingPoint("first_release", first.get("program_point"), unknown);
-        collectMissingPoint("later_release", later.get("program_point"), unknown);
-        if (((String) query.get("callee")).isEmpty()) {
-            unknown.add("later_release_callee_unknown");
+    public static void record(String cwe, Heap heap, HeapLifetime lifetime, MemoryEvent terminal,
+            Function callee, int argumentIndex, String accessKind) {
+        if (!"CWE415".equals(cwe) && !"CWE416".equals(cwe)) {
+            throw new IllegalArgumentException("Unsupported memory profile: " + cwe);
         }
-
-        Map<String, Object> candidate = new LinkedHashMap<>();
-        candidate.put("profile", "double_free");
-        candidate.put("cwe", "CWE415");
-        candidate.put("evidence_strength", "may");
-        candidate.put("object", object);
-        candidate.put("events", List.of(first, later));
-        candidate.put("unknown_reasons", unknown);
-        candidate.put("candidate_id", candidateId(candidate));
-        return candidate;
-    }
-
-    public static void writeConfiguredEvidence() throws IOException {
-        String configured = System.getenv(OUTPUT_ENV);
-        if (configured == null || configured.isBlank()) {
+        MemoryEvent allocation = lifetime.getAllocation();
+        if (allocation == null) {
+            recordGap("allocation_event_missing", heap, terminal);
             return;
         }
-        List<Map<String, Object>> candidates = new ArrayList<>();
-        for (CWEReport report : Logging.getCWEReports().keySet()) {
-            if ("CWE415".equals(report.getCwe()) && report.getStructuredEvidence() != null) {
-                candidates.add(report.getStructuredEvidence());
-            }
+        Map<String, Object> allocated = event(allocation, "allocation", null);
+        Map<String, Object> object = Map.of(
+                "object_id", objectId(heap), "kind", "heap", "allocation_event", allocated,
+                "allocation_site", allocated.get("program_point"),
+                "allocation_context", allocated.get("context"));
+        Map<String, Object> query;
+        if (callee != null) {
+            query = Map.of("kind", "call_argument", "callee", callee.getName(false), "argument_index", argumentIndex);
+        } else {
+            query = Map.of("kind", "memory_operand", "opcode", "read".equals(accessKind) ? "LOAD" : "STORE", "operand_index", 1);
         }
-        candidates.sort(Comparator.comparing(item -> String.valueOf(item.get("candidate_id"))));
+        boolean doubleFree = "CWE415".equals(cwe);
+        Map<String, Object> later = event(terminal, doubleFree ? "later_release" : "use", query);
+        for (MemoryEvent release : lifetime.getReleases()) {
+            Map<String, Object> first = event(release, "first_release", null);
+            TreeSet<String> reasons = new TreeSet<>(lifetime.getGaps());
+            if (lifetime.isMayLive()) { reasons.add("lifetime_may_be_live"); }
+            if (release.equals(terminal)) { reasons.add("repeated_static_event_order_unknown"); }
+            for (MemoryEvent source : List.of(allocation, release, terminal)) {
+                if (source.getPcodeTime() < 0) { reasons.add("native_operation_time_unknown"); }
+                if (source.getAddress() == null || source.getFunctionEntry().isEmpty()) {
+                    recordGap("event_program_point_missing", heap, source);
+                    return;
+                }
+            }
+            List<Map<String, Object>> events = List.of(first, later);
+            String identity = digest("ma-", Map.of("cwe", cwe, "object_id", object.get("object_id"), "events", events));
+            Map<String, Object> candidate = new LinkedHashMap<>();
+            candidate.put("candidate_id", identity);
+            candidate.put("profile", doubleFree ? "double_free" : "use_after_free");
+            candidate.put("cwe", cwe);
+            candidate.put("evidence_strength", "may");
+            candidate.put("object", object);
+            candidate.put("events", events);
+            candidate.put("event_order", Map.of("before", first.get("event_id"), "after", later.get("event_id"), "basis", "abstract_execution"));
+            candidate.put("unknown_reasons", List.copyOf(reasons));
+            Map<String, Object> previous = CANDIDATES.get(identity);
+            if (previous != null) {
+                int gapCount = ((List<?>) previous.get("unknown_reasons")).size();
+                if (gapCount < reasons.size()
+                        || (gapCount == reasons.size() && digest("", previous).compareTo(digest("", candidate)) <= 0)) {
+                    continue;
+                }
+            }
+            CANDIDATES.put(identity, Collections.unmodifiableMap(candidate));
+        }
+    }
 
-        Map<String, Object> producer = new LinkedHashMap<>();
-        producer.put("name", "BinAbsInspector");
-        producer.put("version", "12.0.4-taintsage-release-context");
+    public static void recordGap(String reason, Heap heap, MemoryEvent location) {
+        Map<String, Object> gap = new LinkedHashMap<>();
+        gap.put("reason", reason);
+        gap.put("scope", heap == null ? "unresolved" : "object");
+        gap.put("object_id", heap == null ? "" : objectId(heap));
+        gap.put("program_point", Map.of("function_entry", location.getFunctionEntry(), "instruction_address", canonicalAddress(location.getAddress())));
+        gap.put("context", location.getContextFrames());
+        Map<String, Object> immutable = Collections.unmodifiableMap(gap);
+        GAPS.put(digest("gap-", immutable), immutable);
+    }
 
-        Map<String, Object> binary = new LinkedHashMap<>();
-        String sha256 = GlobalState.currentProgram.getExecutableSHA256();
-        binary.put("sha256", sha256 == null ? "" : sha256.toLowerCase());
-        binary.put("program_name", GlobalState.currentProgram.getName());
+    private static String objectId(Heap heap) {
+        MemoryEvent allocation = new MemoryEvent(heap.getAllocAddress(), heap.getContext(), -1, "allocation");
+        return digest("mo-", Map.of("instruction_address", canonicalAddress(allocation.getAddress()),
+                "function_entry", allocation.getFunctionEntry(), "context", allocation.getContextFrames()));
+    }
 
+    private static Map<String, Object> event(MemoryEvent source, String role, Map<String, Object> query) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("kind", source.getKind());
+        value.put("program_point", Map.of("function_entry", source.getFunctionEntry(), "instruction_address", canonicalAddress(source.getAddress())));
+        value.put("context", source.getContextFrames());
+        value.put("native_pcode_time", source.getPcodeTime());
+        if (query != null) { value.put("query", query); }
+        value.put("event_id", digest("me-", value));
+        value.put("role", role);
+        return Collections.unmodifiableMap(value);
+    }
+
+    public static void writeConfiguredEvidence(AnalysisOutcome outcome, List<String> entryPoints) throws IOException {
+        String configured = System.getenv(OUTPUT_ENV);
+        if (configured == null || configured.isBlank()) { return; }
         Map<String, Object> document = new LinkedHashMap<>();
+        String sha256 = GlobalState.currentProgram.getExecutableSHA256();
         document.put("schema_version", SCHEMA_VERSION);
-        document.put("producer", producer);
-        document.put("binary", binary);
-        document.put("analysis_status", "completed");
-        document.put("candidates", candidates);
-        document.put("diagnostics", List.of());
-        writeAtomic(Path.of(configured), document);
-    }
-
-    private static Map<String, Object> programPoint(Address address) {
-        Map<String, Object> point = new LinkedHashMap<>();
-        if (address == null) {
-            point.put("function_entry", "");
-            point.put("instruction_address", "");
-            return point;
+        document.put("producer", Map.of("name", "BinAbsInspector", "version", "12.0.4-taintsage-lifetime"));
+        document.put("binary", Map.of("sha256", sha256 == null ? "" : sha256.toLowerCase(), "program_name", GlobalState.currentProgram.getName()));
+        document.put("analysis_status", outcome.getStatus());
+        document.put("entry_points", List.copyOf(entryPoints));
+        document.put("candidates", getCandidates());
+        document.put("diagnostics", outcome.getDiagnostics());
+        document.put("analysis_gaps", getAnalysisGaps());
+        Path output = Path.of(configured).toAbsolutePath();
+        if (output.getParent() != null) { Files.createDirectories(output.getParent()); }
+        Path temporary = output.resolveSibling(output.getFileName() + ".tmp");
+        MAPPER.writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), document);
+        try {
+            Files.move(temporary, output, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException unsupported) {
+            Files.move(temporary, output, StandardCopyOption.REPLACE_EXISTING);
         }
-        Function function = GlobalState.flatAPI.getFunctionContaining(address);
-        point.put(
-                "function_entry",
-                function == null ? "" : canonicalAddress(function.getEntryPoint()));
-        point.put("instruction_address", canonicalAddress(address));
-        return point;
-    }
-
-    private static List<Map<String, Object>> contextFrames(Context context) {
-        List<Map<String, Object>> frames = new ArrayList<>();
-        if (context == null) {
-            return frames;
-        }
-        long[] callString = context.getCallString();
-        Function[] functions = context.getFuncs();
-        for (int i = functions.length - 1; i >= 0; i--) {
-            if (functions[i] == null) {
-                continue;
-            }
-            Map<String, Object> frame = new LinkedHashMap<>();
-            frame.put("call_site", canonicalAddress(GlobalState.flatAPI.toAddr(callString[i])));
-            frame.put("function_entry", canonicalAddress(functions[i].getEntryPoint()));
-            frame.put("function_name", functions[i].getName(false));
-            frames.add(frame);
-        }
-        return frames;
     }
 
     private static String canonicalAddress(Address address) {
-        return address.getAddressSpace().getName().toLowerCase()
+        return address == null ? "" : address.getAddressSpace().getName().toLowerCase()
                 + ":" + Long.toUnsignedString(address.getOffset(), 16);
     }
 
-    @SuppressWarnings("unchecked")
-    private static void collectMissingPoint(
-            String name, Object value, List<String> unknown) {
-        if (!(value instanceof Map)) {
-            unknown.add(name + "_unknown");
-            return;
-        }
-        Map<String, Object> point = (Map<String, Object>) value;
-        if (String.valueOf(point.get("function_entry")).isEmpty()
-                || String.valueOf(point.get("instruction_address")).isEmpty()) {
-            unknown.add(name + "_unknown");
-        }
-    }
-
-    private static String candidateId(Map<String, Object> candidate) {
-        String object = String.valueOf(candidate.get("object"));
-        String events = String.valueOf(candidate.get("events"));
+    private static String digest(String prefix, Object value) {
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest((object + "\n" + events).getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder("ma-");
-            for (int i = 0; i < 10; i++) {
-                result.append(String.format("%02x", bytes[i]));
-            }
+            byte[] bytes = MessageDigest.getInstance("SHA-256").digest(MAPPER.writeValueAsBytes(value));
+            StringBuilder result = new StringBuilder(prefix);
+            for (byte item : bytes) { result.append(String.format("%02x", item)); }
             return result.toString();
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 unavailable", impossible);
-        }
-    }
-
-    private static void writeAtomic(Path output, Map<String, Object> document) throws IOException {
-        Path absolute = output.toAbsolutePath();
-        if (absolute.getParent() != null) {
-            Files.createDirectories(absolute.getParent());
-        }
-        Path temporary = absolute.resolveSibling(absolute.getFileName() + ".tmp");
-        new ObjectMapper().writerWithDefaultPrettyPrinter().writeValue(temporary.toFile(), document);
-        try {
-            Files.move(
-                    temporary, absolute, StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException unsupported) {
-            Files.move(temporary, absolute, StandardCopyOption.REPLACE_EXISTING);
+        } catch (NoSuchAlgorithmException | IOException impossible) {
+            throw new IllegalStateException("Cannot identify memory evidence", impossible);
         }
     }
 }

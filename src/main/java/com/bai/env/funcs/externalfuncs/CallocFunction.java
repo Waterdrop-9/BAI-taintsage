@@ -4,6 +4,7 @@ import static com.bai.util.Utils.getAddress;
 
 import com.bai.env.ALoc;
 import com.bai.env.AbsEnv;
+import com.bai.env.MemoryEvent;
 import com.bai.env.AbsVal;
 import com.bai.env.Context;
 import com.bai.env.KSet;
@@ -54,7 +55,8 @@ public class CallocFunction extends ExternalFunctionBase {
         }
         Address allocAddress = getAddress(pcode);
         KSet resKSet = new KSet(retALoc.getLen() * 8);
-        Heap allocChunk = Heap.getHeap(allocAddress, context, size, true);
+        Heap allocChunk = Heap.getHeap(allocAddress, context, size);
+        inOutEnv.allocate(allocChunk, MemoryEvent.at(pcode, context, "allocation"));
         resKSet = resKSet.insert(AbsVal.getPtr(allocChunk));
         inOutEnv.set(retALoc, resKSet, true);
     }

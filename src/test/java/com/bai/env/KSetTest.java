@@ -50,7 +50,7 @@ public class KSetTest {
         expect = expect.insert(new AbsVal(local, 0x101L));
         assert k1.add(k2).equals(expect);
 
-        Heap heap = Heap.getHeap(mockAddress, mockContext, true);
+        Heap heap = Heap.getHeap(mockAddress, mockContext);
         k1 = k1.insert(new AbsVal(heap, 0x200));
         expect = expect.insert(new AbsVal(heap, 0x202L));
         assert k1.add(k2).equals(expect);
@@ -82,7 +82,7 @@ public class KSetTest {
         assert k1.sub(k2).equals(expect);
 
         Local local = Local.getLocal(mockFunction);
-        Heap heap = Heap.getHeap(mockAddress, mockContext, true);
+        Heap heap = Heap.getHeap(mockAddress, mockContext);
 
         k1 = new KSet(32)
                 .insert(new AbsVal(1))

@@ -29,47 +29,19 @@ public class HeapTest {
     }
 
     @Test
-    public void preservesFirstReleaseContextAcrossLaterReleases() {
-        Heap allocated = Heap.getHeap(Mockito.mock(Address.class), Mockito.mock(Context.class), true);
-        Address firstSite = Mockito.mock(Address.class);
-        Context firstContext = Mockito.mock(Context.class);
-        Heap freed = allocated.toInvalid(firstSite, firstContext);
-        Heap releasedAgain = freed.toInvalid(Mockito.mock(Address.class), Mockito.mock(Context.class));
-        org.junit.Assert.assertSame(freed, releasedAgain);
-        org.junit.Assert.assertSame(firstSite, releasedAgain.getFreeSite());
-        org.junit.Assert.assertSame(firstContext, releasedAgain.getFreeContext());
-    }
-
-    @Test
-    public void legacyReleaseHasNoInventedContext() {
-        Heap allocated = Heap.getHeap(Mockito.mock(Address.class), Mockito.mock(Context.class), true);
-        org.junit.Assert.assertNull(allocated.toInvalid(Mockito.mock(Address.class)).getFreeContext());
-    }
-
-    @Test
     public void testGetHeap() {
         Address a1 = Mockito.mock(Address.class);
         Context c1 = Mockito.mock(Context.class);
-        Heap h1 = Heap.getHeap(a1, c1, true);
-        Heap h2 = Heap.getHeap(a1, c1, true);
+        Heap h1 = Heap.getHeap(a1, c1);
+        Heap h2 = Heap.getHeap(a1, c1);
         assert h1 == h2;
 
         Address a2 = Mockito.mock(Address.class);
         Context c2 = Mockito.mock(Context.class);
-        h1 = Heap.getHeap(a2, c2, 0x100, true);
-        h2 = Heap.getHeap(a2, c2, 0x200, true);
+        h1 = Heap.getHeap(a2, c2, 0x100);
+        h2 = Heap.getHeap(a2, c2, 0x200);
         assert h1 == h2;
         assert h1.getSize() == 0x200;
     }
 
-    @Test
-    public void testToInvalid() {
-        Address a1 = Mockito.mock(Address.class);
-        Context c1 = Mockito.mock(Context.class);
-        Heap h1 = Heap.getHeap(a1, c1, true);
-        Heap h2 = h1.toInvalid(a1);
-        Heap h3 = Heap.getHeap(a1, c1, true);
-        assert h1.equals(h3);
-        assert !h3.equals(h2);
-    }
 }

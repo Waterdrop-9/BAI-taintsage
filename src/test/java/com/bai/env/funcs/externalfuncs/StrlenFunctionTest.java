@@ -29,7 +29,7 @@ public class StrlenFunctionTest extends ARMProgramTestBase {
 
         final AbsEnv inOutEnv = new AbsEnv();
         final AbsEnv tmpEnv = new AbsEnv();
-        Heap heap = Heap.getHeap(GlobalState.flatAPI.toAddr(0x1122), mockContext, true);
+        Heap heap = Heap.getHeap(GlobalState.flatAPI.toAddr(0x1122), mockContext);
         ALoc ptrALoc = ALoc.getALoc(heap, 0x3000, 4);
         inOutEnv.set(ptrALoc, new KSet(32).insert(new AbsVal(0x44434241)), true);
         ptrALoc = ALoc.getALoc(heap, 0x3004, 4);
