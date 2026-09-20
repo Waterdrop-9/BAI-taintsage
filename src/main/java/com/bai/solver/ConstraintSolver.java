@@ -7,6 +7,7 @@ import com.bai.env.Context;
 import com.bai.env.Interval;
 import com.bai.env.KSet;
 import com.bai.env.region.Global;
+import com.bai.env.region.Heap;
 import com.bai.util.GlobalState;
 import com.bai.util.Logging;
 import com.bai.util.Utils;
@@ -508,8 +509,14 @@ public class ConstraintSolver {
             return;
         }
         tmpEnv.set(ptrALoc, srcKSet, true);
-        Expr dstExpr = getBVExprDef(ALoc.getALoc(ptr.getRegion(), ptr.getValue(), src.getSize()));
-        addConstraint(z3Ctx.mkEq(srcExpr, dstExpr));
+        ALoc destination = ALoc.getALoc(ptr.getRegion(), ptr.getValue(), src.getSize());
+        aLocExprHashMap.keySet().removeIf(location -> location.getRegion().equals(destination.getRegion())
+                && location.getBegin() < destination.getBegin() + destination.getLen()
+                && destination.getBegin() < location.getBegin() + location.getLen());
+        Expr dstExpr = getBVExprDef(destination);
+        if (!(ptr.getRegion() instanceof Heap heap) || !tmpEnv.getLifetime(heap).hasMergedInstances()) {
+            addConstraint(z3Ctx.mkEq(srcExpr, dstExpr));
+        }
     }
 
     public void visit_INT_EQUAL(PcodeOp pcode, AbsEnv tmpEnv) {

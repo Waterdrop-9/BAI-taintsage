@@ -40,10 +40,6 @@ public class VectorModel extends CppStdModelBase<ArrayList<KSet>> {
     }
 
     private void end(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
-        if (callFunc.getParameterCount() != 1) {
-            Logging.error("Wrong parameter for: " + callFunc);
-            return;
-        }
         ALoc retALoc = getReturnALoc(callFunc, true);
         if (retALoc == null) {
             return;
@@ -53,10 +49,6 @@ public class VectorModel extends CppStdModelBase<ArrayList<KSet>> {
     }
 
     private void insert(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
-        if (callFunc.getParameterCount() != 4) {
-            Logging.error("Wrong parameter for: " + callFunc);
-            return;
-        }
         KSet thisKSet = getParamKSet(callFunc, 0, inOutEnv);
         KSet iteratorKSet = getParamKSet(callFunc, 1, inOutEnv);
         KSet countKSet = getParamKSet(callFunc, 2, inOutEnv);
@@ -101,10 +93,6 @@ public class VectorModel extends CppStdModelBase<ArrayList<KSet>> {
     }
 
     private void subscript(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
-        if (callFunc.getParameterCount() != 2) {
-            Logging.error("Wrong parameter for: " + callFunc);
-            return;
-        }
         ALoc retALoc = getReturnALoc(callFunc, true);
         if (retALoc == null) {
             return;
@@ -148,30 +136,16 @@ public class VectorModel extends CppStdModelBase<ArrayList<KSet>> {
         inOutEnv.set(retALoc, resKSet, true);
     }
 
-    public void invoke(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
-        Logging.debug("Invoke std::vector::" + callFunc.getName());
-        switch (callFunc.getName()) {
-            case "vector":
-                if (callFunc.getParameterCount() == 1) {
-                    invokeConstructor(pcode, inOutEnv, tmpEnv, context, callFunc);
-                } else if (callFunc.getParameterCount() == 2) {
-                    invokeCopyConstructor(pcode, inOutEnv, tmpEnv, context, callFunc);
-                }
-                break;
-            case "end":
-                end(pcode, inOutEnv, tmpEnv, context, callFunc);
-                break;
-            case "insert":
-                insert(pcode, inOutEnv, tmpEnv, context, callFunc);
-                break;
-            case "operator[]":
-                subscript(pcode, inOutEnv, tmpEnv, context, callFunc);
-                break;
-            case "~vector":
-                invokeDestructor(pcode, inOutEnv, tmpEnv, context, callFunc);
-                break;
-            default:
-        }
+    @Override
+    public Handler resolve(Function function) {
+        int arity = function.getParameterCount();
+        return switch (function.getName()) {
+            case "vector" -> arity == 1 ? this::invokeConstructor : arity == 2 ? this::invokeCopyConstructor : null;
+            case "end" -> arity == 1 ? this::end : null;
+            case "insert" -> arity == 4 ? this::insert : null;
+            case "operator[]" -> arity == 2 ? this::subscript : null;
+            case "~vector" -> arity == 1 ? this::invokeDestructor : null;
+            default -> null;
+        };
     }
-
 }

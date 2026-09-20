@@ -142,6 +142,9 @@ public class BinAbsInspector extends GhidraScript {
                 return;
             }
             FunctionModelManager.initAll();
+            com.bai.util.NativePrimitiveCatalog.writeConfigured(
+                    System.getenv(com.bai.util.NativePrimitiveCatalog.OUTPUT_ENV),
+                    GlobalState.currentProgram.getExecutableSHA256());
             if (GlobalState.config.isEnableZ3() && !Utils.checkZ3Installation()) {
                 return;
             }
@@ -158,6 +161,7 @@ public class BinAbsInspector extends GhidraScript {
                 Utils.loadCustomExternalFunctionFromLabelHistory(GlobalState.currentProgram);
             }
             GlobalState.arch = new Architecture(GlobalState.currentProgram);
+            com.bai.env.funcs.MemorySummaries.configure(System.getenv(com.bai.env.funcs.MemorySummaries.INPUT_ENV));
             boolean success = analyze();
             if (!success) {
                 outcome = AnalysisOutcome.failed("missing_entry", "No supported entry function found");

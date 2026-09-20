@@ -9,12 +9,12 @@ import com.bai.env.ContextTransitionTable;
 import com.bai.env.Interval;
 import com.bai.env.KSet;
 import com.bai.env.funcs.FunctionModelManager;
+import com.bai.env.funcs.MemorySummaries;
 import com.bai.env.funcs.externalfuncs.ExternalFunctionBase;
 import com.bai.env.funcs.externalfuncs.VarArgsFunctionBase;
 import com.bai.env.region.Global;
 import com.bai.env.region.Local;
 import com.bai.env.region.Reg;
-import com.bai.env.funcs.stdfuncs.CppStdModelBase;
 import com.bai.util.GlobalState;
 import com.bai.util.Logging;
 import com.bai.util.Utils;
@@ -278,7 +278,7 @@ public class PcodeVisitor {
                     }
                 }
                 KSet newKSet = new KSet(filteredSet, kSet.getBits(), kSet.getTaints());
-                newAbsEnv.set(aLoc, newKSet, true);
+                newAbsEnv.setState(aLoc, newKSet, true);
             }
         }
         return newAbsEnv;
@@ -383,16 +383,6 @@ public class PcodeVisitor {
         }
     }
 
-    private void defineStdFunctionSignature(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Function callee) {
-        String namespaceString = callee.getParentNamespace().getName();
-        CppStdModelBase stdModel = FunctionModelManager.getStdModel(namespaceString);
-        if (stdModel == null) {
-            return;
-        }
-        stdModel.defineDefaultSignature(callee);
-    }
-
-
     private Status invokeExternal(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Function callee) {
         String funcName = callee.getName();
         ExternalFunctionBase externalFunction = FunctionModelManager.getExternalFunction(funcName);
@@ -414,17 +404,10 @@ public class PcodeVisitor {
         return new Status(callee.hasNoReturn(), false, false, true);
     }
 
-    private Status invokeStd(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Function callee) {
-        String namespaceString = callee.getParentNamespace().getName();
-        CppStdModelBase stdModel = FunctionModelManager.getStdModel(namespaceString);
-
-        if (stdModel != null) {
-            Logging.debug("Invoke std function model: " + callee.getName());
-            stdModel.invoke(pcode, inOutEnv, tmpEnv, context, callee);
-            inOutEnv.markHeapGap("container_state_not_path_sensitive", MemoryEvent.at(pcode, context, "gap"));
-        } else {
-            inOutEnv.markHeapGap("unmodeled_std_transfer:" + namespaceString, MemoryEvent.at(pcode, context, "gap"));
-        }
+    private Status invokeStd(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Function callee,
+            FunctionModelManager.StdCallModel resolved) {
+        resolved.handler().invoke(pcode, inOutEnv, tmpEnv, context, callee);
+        inOutEnv.markHeapGap("container_state_not_path_sensitive", MemoryEvent.at(pcode, context, "gap"));
         if (GlobalState.arch.isX86()) {
             // pop return address on stack
             ALoc spALoc = ALoc.getALoc(
@@ -675,16 +658,19 @@ public class PcodeVisitor {
             return;
         }
 
-        if (FunctionModelManager.isStd(callee)) { // TODO: support mapping address to std model
+        var stdCall = FunctionModelManager.resolveStd(callee);
+        if (stdCall != null) {
             Logging.debug("Calling C++ STL: " + callee.getName(true));
-            defineStdFunctionSignature(pcode, inOutEnv, tmpEnv, callee);
+            stdCall.model().defineDefaultSignature(callee);
             MemoryCorruption.checkExternalCallParameters(pcode, inOutEnv, tmpEnv, context, callee);
-            Status status = invokeStd(pcode, inOutEnv, tmpEnv, callee);
+            Status status = invokeStd(pcode, inOutEnv, tmpEnv, callee, stdCall);
             if (status.noReturn) {
                 jumpOut = true;
             }
             return;
         }
+
+        if (MemorySummaries.tryApply(callee, pcode, context, inOutEnv)) { return; }
 
         Context newContext = Context.getContext(context, callSite, callee);
         Logging.debug("New Context: " + newContext.toString());
@@ -723,7 +709,7 @@ public class PcodeVisitor {
                             continue;
                         }
                     }
-                    inOutEnv.set(entry.getKey(), entry.getValue(), true);
+                    inOutEnv.setState(entry.getKey(), entry.getValue(), true);
                 }
             }
         }
@@ -793,6 +779,7 @@ public class PcodeVisitor {
             AbsEnv targetEnv = new AbsEnv(inOutEnv);
             AbsEnv targetTmp = new AbsEnv(tmpEnv);
             Status status;
+            var stdCall = FunctionModelManager.resolveStd(callee);
             if (callee.isExternal() || FunctionModelManager.isFunctionAddressMapped(targetAddress)) {
                 defineExternalFunctionSignature(pcode, targetEnv, targetTmp, callee);
                 // CWE119, CWE416, CWE416, CWE476
@@ -808,14 +795,11 @@ public class PcodeVisitor {
                 noReturn &= status.noReturn;
                 isExitEmpty |= status.isExitEmpty;
                 isFinished = isFinished & status.isFinished;
-            } else if (FunctionModelManager.isStd(callee)) { // TODO: support mapping address to std model
-                defineStdFunctionSignature(pcode, targetEnv, targetTmp, callee);
+            } else if (stdCall != null) {
+                stdCall.model().defineDefaultSignature(callee);
                 // CWE119, CWE416, CWE416, CWE476
                 MemoryCorruption.checkExternalCallParameters(pcode, targetEnv, targetTmp, context, callee);
-                status = invokeStd(pcode, targetEnv, targetTmp, callee);
-                if (status == null) {
-                    continue;
-                }
+                status = invokeStd(pcode, targetEnv, targetTmp, callee, stdCall);
                 if (!status.noReturn) {
                     AbsEnv joinedTarget = resEnv.join(targetEnv);
                     if (joinedTarget != null) { resEnv = joinedTarget; }
@@ -823,6 +807,10 @@ public class PcodeVisitor {
                 noReturn &= status.noReturn;
                 isExitEmpty |= status.isExitEmpty;
                 isFinished = isFinished & status.isFinished;
+            } else if (MemorySummaries.tryApply(callee, pcode, context, targetEnv)) {
+                noReturn = false;
+                AbsEnv joinedTarget = resEnv.join(targetEnv);
+                if (joinedTarget != null) { resEnv = joinedTarget; }
             } else {
                 Context newContext = Context.getContext(context, callSite, callee);
                 if (callee.hasNoReturn()) {
@@ -889,7 +877,7 @@ public class PcodeVisitor {
                         continue;
                     }
                 }
-                inOutEnv.set(entry.getKey(), entry.getValue(), true);
+                inOutEnv.setState(entry.getKey(), entry.getValue(), true);
             }
         }
     }

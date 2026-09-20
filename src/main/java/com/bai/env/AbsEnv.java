@@ -232,13 +232,12 @@ public class AbsEnv {
         return res;
     }
 
-    /**
-     * Update a record with a pair of ALoc and KSet inside this AbsEnv
-     * @param newALoc ALoc as the key for this record
-     * @param newKSet KSet as the value for this record
-     * @param isStrongUpdate Flag to indicate strong or weak update
-     */
-    public void set(ALoc newALoc, KSet newKSet, boolean isStrongUpdate) {
+    public void set(ALoc location, KSet value, boolean strong) {
+        boolean merged = location.getRegion().isHeap() && getLifetime((Heap) location.getRegion()).hasMergedInstances();
+        setState(location, value, strong && !merged);
+    }
+
+    public void setState(ALoc newALoc, KSet newKSet, boolean isStrongUpdate) {
         if (!newKSet.isTop()) {
             assert newALoc.len * 8 == newKSet.getBits();
         }
@@ -285,7 +284,7 @@ public class AbsEnv {
                 envMap = envMap.delete(oldALoc);
                 setEmptyALoc(interALoc, oldInterKSet, newInterKSet, isStrongUpdate);
                 envMap = envMap.assign(oldRemainALoc, oldRemainKSet);
-                set(newRemainALoc, newRemainKSet, isStrongUpdate);
+                setState(newRemainALoc, newRemainKSet, isStrongUpdate);
 
             } else if (newALoc.isRightPartialOverlap(oldALoc)) {
                 // ┌─────────────oldRemainALoc
@@ -306,7 +305,7 @@ public class AbsEnv {
                 envMap = envMap.delete(oldALoc);
                 setEmptyALoc(interALoc, oldInterKSet, newInterKSet, isStrongUpdate);
                 envMap = envMap.assign(oldRemainALoc, oldRemainKSet);
-                set(newRemainALoc, newRemainKSet, isStrongUpdate);
+                setState(newRemainALoc, newRemainKSet, isStrongUpdate);
 
             } else if (newALoc.isFullyOverlap(oldALoc)) {
                 // ┌─────────────leftALoc
@@ -323,13 +322,13 @@ public class AbsEnv {
                 if (newBegin != oldBegin) {
                     ALoc leftALoc = ALoc.getALoc(region, newBegin, oldBegin - newBegin);
                     KSet leftKSet = newKSet.truncate(0, oldBegin - newBegin);
-                    set(leftALoc, leftKSet, isStrongUpdate);
+                    setState(leftALoc, leftKSet, isStrongUpdate);
                 }
 
                 if (newEnd != oldEnd) {
                     ALoc rightALoc = ALoc.getALoc(region, oldEnd, newEnd - oldEnd);
                     KSet rightKSet = newKSet.truncate(oldEnd - newBegin, newEnd - oldEnd);
-                    set(rightALoc, rightKSet, isStrongUpdate);
+                    setState(rightALoc, rightKSet, isStrongUpdate);
                 }
 
             } else if (newALoc.isSubsetOverlap(oldALoc)) {

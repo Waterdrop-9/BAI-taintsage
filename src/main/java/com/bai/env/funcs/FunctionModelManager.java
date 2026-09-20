@@ -89,7 +89,6 @@ public class FunctionModelManager {
             new PutsFunction()
     );
 
-    private static List<String> stdNameSpaceStringList = List.of("std");
     private static final List<CppStdModelBase> STD_MODEL_LIST = List.of(
             new ListModel(),
             new MapModel(),
@@ -122,26 +121,25 @@ public class FunctionModelManager {
         }
     }
 
-    /**
-     * Checks if a function is from C++ std library.
-     * @param function the function.
-     * @return true if it is from C++ std library, false otherwise.
-     */
-    public static boolean isStd(Function function) {
+    public record StdCallModel(CppStdModelBase<?> model, CppStdModelBase.Handler handler) { }
+
+    public static StdCallModel resolveStd(Function function) {
         Namespace namespace = function.getParentNamespace();
-        if (namespace == null) {
-            return false;
-        }
-        String namespaceString = namespace.getName(true);
-        if (namespaceString == null) {
-            return false;
-        }
-        for (String s : stdNameSpaceStringList) {
-            if (namespaceString.startsWith(s)) {
-                return true;
+        boolean standard = false;
+        while (namespace != null && !namespace.isGlobal()) {
+            if (namespace.getName().equals("std") && namespace.getParentNamespace().isGlobal()) {
+                standard = true;
+                break;
             }
+            namespace = namespace.getParentNamespace();
         }
-        return false;
+        if (!standard) { return null; }
+        Matcher matcher = STL_MODEL_NAME_PATTERN.matcher(function.getParentNamespace().getName());
+        if (!matcher.find()) { return null; }
+        CppStdModelBase<?> model = symbol2StdModelMap.get(matcher.group(1));
+        if (model == null) { return null; }
+        CppStdModelBase.Handler handler = model.resolve(function);
+        return handler == null ? null : new StdCallModel(model, handler);
     }
 
     /** Get registered external function model.
@@ -150,6 +148,10 @@ public class FunctionModelManager {
     */
     public static ExternalFunctionBase getExternalFunction(String symbol) {
         return symbol2ExternalFunctionMap.get(symbol);
+    }
+
+    public static Map<String, ExternalFunctionBase> getRegisteredExternalFunctions() {
+        return Map.copyOf(symbol2ExternalFunctionMap);
     }
 
     /**
@@ -176,23 +178,6 @@ public class FunctionModelManager {
      */
     public static void resetConfig() {
         address2SymbolConfigMap.clear();
-    }
-
-    /**
-     * Get the std model.
-     * @param nameSpaceString the std name space string.
-     * @return the std model.
-     */
-    public static CppStdModelBase getStdModel(String nameSpaceString) {
-        String modelName;
-        Matcher matcher = STL_MODEL_NAME_PATTERN.matcher(nameSpaceString);
-        if (matcher.find()) {
-            modelName = matcher.group(1);
-            Logging.debug("Match \"" + nameSpaceString + "\" to model name: " + modelName);
-        } else {
-            return null;
-        }
-        return modelName == null ? null : symbol2StdModelMap.get(modelName);
     }
 
     /**

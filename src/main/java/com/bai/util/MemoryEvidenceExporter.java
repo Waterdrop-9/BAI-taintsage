@@ -138,6 +138,8 @@ public final class MemoryEvidenceExporter {
         document.put("candidates", getCandidates());
         document.put("diagnostics", outcome.getDiagnostics());
         document.put("analysis_gaps", getAnalysisGaps());
+        var summaries = com.bai.env.funcs.MemorySummaries.report();
+        if (summaries != null) { document.put("memory_summaries", summaries); }
         Path output = Path.of(configured).toAbsolutePath();
         if (output.getParent() != null) { Files.createDirectories(output.getParent()); }
         Path temporary = output.resolveSibling(output.getFileName() + ".tmp");

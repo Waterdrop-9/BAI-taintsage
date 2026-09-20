@@ -45,6 +45,7 @@ public class GlobalState {
         TaintMap.reset();
         Logging.resetReports();
         MemoryEvidenceExporter.reset();
+        com.bai.env.funcs.MemorySummaries.reset();
         FunctionModelManager.resetConfig();
         FunctionModelManager.resetStdContainers();
         ContextTransitionTable.reset();

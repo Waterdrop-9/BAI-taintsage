@@ -34,10 +34,6 @@ public class ListModel extends CppStdModelBase<LinkedList<KSet>> {
     }
 
     private void pushBack(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
-        if (callFunc.getParameterCount() != 2) {
-            Logging.error("Wrong parameter for: " + callFunc);
-            return;
-        }
         KSet thisKSet = getParamKSet(callFunc, 0, inOutEnv);
         if (!thisKSet.isNormal()) {
             return;
@@ -52,10 +48,6 @@ public class ListModel extends CppStdModelBase<LinkedList<KSet>> {
     }
 
     private void back(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
-        if (callFunc.getParameterCount() != 1) {
-            Logging.error("Wrong parameter for: " + callFunc);
-            return;
-        }
         ALoc retALoc = getReturnALoc(callFunc, true);
         if (retALoc == null) {
             return;
@@ -81,27 +73,15 @@ public class ListModel extends CppStdModelBase<LinkedList<KSet>> {
         inOutEnv.set(retALoc, res, true);
     }
 
-    public void invoke(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
-        Logging.debug("Invoke std::list::" + callFunc.getName());
-        switch (callFunc.getName()) {
-            case "list":
-                if (callFunc.getParameterCount() == 1) {
-                    invokeConstructor(pcode, inOutEnv, tmpEnv, context, callFunc);
-                } else if (callFunc.getParameterCount() == 2) {
-                    invokeCopyConstructor(pcode, inOutEnv, tmpEnv, context, callFunc);
-                }
-                break;
-            case "push_back":
-                pushBack(pcode, inOutEnv, tmpEnv, context, callFunc);
-                break;
-            case "back":
-                back(pcode, inOutEnv, tmpEnv, context, callFunc);
-                break;
-            case "~list":
-                invokeDestructor(pcode, inOutEnv, tmpEnv, context, callFunc);
-                break;
-            default: // fallthrough
-        }
+    @Override
+    public Handler resolve(Function function) {
+        int arity = function.getParameterCount();
+        return switch (function.getName()) {
+            case "list" -> arity == 1 ? this::invokeConstructor : arity == 2 ? this::invokeCopyConstructor : null;
+            case "push_back" -> arity == 2 ? this::pushBack : null;
+            case "back" -> arity == 1 ? this::back : null;
+            case "~list" -> arity == 1 ? this::invokeDestructor : null;
+            default -> null;
+        };
     }
-
 }

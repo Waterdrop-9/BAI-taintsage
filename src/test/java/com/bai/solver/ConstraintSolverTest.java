@@ -864,6 +864,76 @@ public class ConstraintSolverTest extends ARMProgramTestBase {
 
 
     @Test
+    public void testMergedHeapStorePreservesOldValueConstraint() {
+        for (boolean merged : new boolean[]{false, true}) {
+            AbsEnv environment = new AbsEnv();
+            Context caller = Mockito.mock(Context.class);
+            Address site = Utils.getDefaultAddress(0x1230);
+            Heap heap = Heap.getHeap(site, caller);
+            com.bai.env.MemoryEvent allocation = new com.bai.env.MemoryEvent(site, null, 0, "allocation");
+            environment.allocate(heap, allocation);
+            environment.set(Reg.getALoc("r0"), new KSet(32).insert(new AbsVal(heap, 0x30)), true);
+            SequenceNumber sequence = new SequenceNumber(site, 0);
+            ConstraintSolver solver = new ConstraintSolver();
+            solver.visit_STORE(new PcodeOp(sequence, PcodeOp.STORE, new Varnode[]{
+                    new Varnode(Utils.getConstantAddress(0), 4), Utils.getRegVarnode("r0"),
+                    new Varnode(Utils.getConstantAddress(17), 4)}, null), environment);
+            if (merged) { environment.allocate(heap, allocation); }
+            solver.visit_STORE(new PcodeOp(sequence, PcodeOp.STORE, new Varnode[]{
+                    new Varnode(Utils.getConstantAddress(0), 4), Utils.getRegVarnode("r0"),
+                    new Varnode(Utils.getConstantAddress(99), 4)}, null), environment);
+            solver.visit_LOAD(new PcodeOp(sequence, PcodeOp.LOAD, new Varnode[]{
+                    new Varnode(Utils.getConstantAddress(0), 4), Utils.getRegVarnode("r0")},
+                    Utils.getRegVarnode("r2")), environment);
+            Expr loaded = solver.getALocExprHashMap().get(Reg.getALoc("r2"));
+            com.microsoft.z3.Context z3 = solver.getZ3Context();
+            Assert.assertEquals(Status.SATISFIABLE,
+                    solver.getOptimize().Check(z3.mkEq(loaded, z3.mkBV(99, 32))));
+            Assert.assertEquals(merged ? Status.SATISFIABLE : Status.UNSATISFIABLE,
+                    solver.getOptimize().Check(z3.mkEq(loaded, z3.mkBV(17, 32))));
+        }
+    }
+
+    @Test
+    public void testOverlappingHeapStoreInvalidatesStaleLoadExpression() {
+        for (boolean merged : new boolean[]{false, true}) {
+            for (int byteOffset : new int[]{0, 2}) {
+                AbsEnv environment = new AbsEnv();
+                Address site = Utils.getDefaultAddress(0x1250);
+                Heap heap = Heap.getHeap(site, Mockito.mock(Context.class));
+                com.bai.env.MemoryEvent allocation = new com.bai.env.MemoryEvent(site, null, 0, "allocation");
+                environment.allocate(heap, allocation);
+                environment.set(Reg.getALoc("r0"), new KSet(32).insert(new AbsVal(heap, 0x30)), true);
+                environment.set(Reg.getALoc("r1"), new KSet(32).insert(new AbsVal(heap, 0x30 + byteOffset)), true);
+                SequenceNumber sequence = new SequenceNumber(site, 0);
+                ConstraintSolver solver = new ConstraintSolver();
+                Varnode space = new Varnode(Utils.getConstantAddress(0), 4);
+                solver.visit_STORE(new PcodeOp(sequence, PcodeOp.STORE, new Varnode[]{space,
+                        Utils.getRegVarnode("r0"), new Varnode(Utils.getConstantAddress(0x11111111), 4)}, null), environment);
+                solver.visit_LOAD(new PcodeOp(sequence, PcodeOp.LOAD, new Varnode[]{space,
+                        Utils.getRegVarnode("r0")}, Utils.getRegVarnode("r3")), environment);
+                Expr historical = solver.getALocExprHashMap().get(Reg.getALoc("r3"));
+                if (merged) { environment.allocate(heap, allocation); }
+                solver.visit_STORE(new PcodeOp(sequence, PcodeOp.STORE, new Varnode[]{space,
+                        Utils.getRegVarnode("r1"), new Varnode(Utils.getConstantAddress(0x2222), 2)}, null), environment);
+                solver.visit_LOAD(new PcodeOp(sequence, PcodeOp.LOAD, new Varnode[]{space,
+                        Utils.getRegVarnode("r0")}, Utils.getRegVarnode("r2")), environment);
+                Expr loaded = solver.getALocExprHashMap().get(Reg.getALoc("r2"));
+                com.microsoft.z3.Context z3 = solver.getZ3Context();
+                long changed = byteOffset == 0 ? 0x11112222L : 0x22221111L;
+                Assert.assertEquals(Status.SATISFIABLE,
+                        solver.getOptimize().Check(z3.mkEq(loaded, z3.mkBV(changed, 32))));
+                if (merged) {
+                    Assert.assertEquals(Status.SATISFIABLE,
+                            solver.getOptimize().Check(z3.mkEq(loaded, z3.mkBV(0x11111111, 32))));
+                }
+                Assert.assertEquals(Status.UNSATISFIABLE,
+                        solver.getOptimize().Check(z3.mkNot(z3.mkEq(historical, z3.mkBV(0x11111111, 32)))));
+            }
+        }
+    }
+
+    @Test
     public void testVisitStoreLoad() {
         AbsEnv tmpEnv = new AbsEnv();
 

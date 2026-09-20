@@ -24,6 +24,7 @@ public final class HeapLifetime {
     public static HeapLifetime unknown() { return new HeapLifetime(null, true, Set.of(), Set.of("allocation_state_missing")); }
     public MemoryEvent getAllocation() { return allocation; }
     public boolean isMayLive() { return mayLive; }
+    public boolean hasMergedInstances() { return gaps.contains("allocation_instances_merged"); }
     public Set<MemoryEvent> getReleases() { return releases; }
     public Set<String> getGaps() { return gaps; }
     public HeapLifetime withGap(String gap) {
@@ -34,7 +35,7 @@ public final class HeapLifetime {
     public HeapLifetime release(MemoryEvent event, boolean strong) {
         Set<MemoryEvent> next = new HashSet<>(releases);
         if (mayLive) { next.add(event); }
-        return new HeapLifetime(allocation, (!strong || gaps.contains("allocation_instances_merged")) && mayLive, next, gaps);
+        return new HeapLifetime(allocation, (!strong || hasMergedInstances()) && mayLive, next, gaps);
     }
     public HeapLifetime join(HeapLifetime other) {
         Set<MemoryEvent> events = new HashSet<>(releases);

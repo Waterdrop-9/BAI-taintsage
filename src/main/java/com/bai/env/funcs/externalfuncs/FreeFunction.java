@@ -1,12 +1,11 @@
 // Modified for TaintSage, 2026-09-15. Distributed under GPL-3.0; see LICENSE.
 package com.bai.env.funcs.externalfuncs;
 
-import static com.bai.util.Utils.getAddress;
-
 import com.bai.env.AbsEnv;
 import com.bai.env.AbsVal;
 import com.bai.env.Context;
 import com.bai.env.KSet;
+import com.bai.env.MemoryEvent;
 import com.bai.env.region.Heap;
 import ghidra.program.model.data.PointerDataType;
 import ghidra.program.model.data.VoidDataType;
@@ -35,19 +34,22 @@ public class FreeFunction extends ExternalFunctionBase {
 
     @Override
     public void invoke(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function callFunc) {
-        KSet pointers = getParamKSet(callFunc, 0, inOutEnv);
+        releasePointers(getParamKSet(callFunc, 0, inOutEnv), inOutEnv, MemoryEvent.at(pcode, context, "release"));
+    }
+
+    public static void releasePointers(KSet pointers, AbsEnv inOutEnv, MemoryEvent event) {
         if (!pointers.isNormal()) {
-            inOutEnv.markUnresolvedEffect("unresolved_release_target", com.bai.env.MemoryEvent.at(pcode, context, "gap"));
+            inOutEnv.markUnresolvedEffect("unresolved_release_target", event);
             return;
         }
         for (AbsVal pointer : pointers) {
             if (!pointer.getRegion().isHeap()) { continue; }
             Heap heap = (Heap) pointer.getRegion();
             if (pointer.isBigVal() || pointer.getOffset() != 0) {
-                inOutEnv.markHeapGap(heap, "invalid_interior_release", com.bai.env.MemoryEvent.at(pcode, context, "gap"));
+                inOutEnv.markHeapGap(heap, "invalid_interior_release", event);
                 continue;
             }
-            inOutEnv.release(heap, com.bai.env.MemoryEvent.at(pcode, context, "release"), pointers.isSingleton());
+            inOutEnv.release(heap, event, pointers.isSingleton());
         }
     }
 }

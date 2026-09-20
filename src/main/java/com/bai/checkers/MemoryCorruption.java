@@ -243,7 +243,7 @@ public class MemoryCorruption {
         int parameters = signature == null ? calleeFunc.getParameterCount() : signature.getArguments().length;
         List<String> reasons = new ArrayList<>(effects.getGaps());
         if (FunctionModelManager.getExternalFunction(calleeFunc.getName()) == null
-                && !FunctionModelManager.isStd(calleeFunc)) {
+                && FunctionModelManager.resolveStd(calleeFunc) == null) {
             reasons.add("unmodeled_call_transfer:" + calleeFunc.getName());
         }
         if (!reasons.isEmpty()) {

@@ -95,10 +95,6 @@ public abstract class CppStdModelBase<T> {
      */
     protected void invokeConstructor(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context,
             Function calleeFunc) {
-        if (calleeFunc.getParameterCount() != 1) {
-            Logging.error("Wrong parameter for: " + calleeFunc);
-            return;
-        }
         KSet ptrKSet = getParamKSet(calleeFunc, 0, inOutEnv);
         if (!ptrKSet.isNormal()) {
             return;
@@ -123,10 +119,6 @@ public abstract class CppStdModelBase<T> {
      */
     protected void invokeCopyConstructor(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context,
             Function calleeFunc) {
-        if (calleeFunc.getParameterCount() != 2) {
-            Logging.error("Wrong parameter for: " + calleeFunc);
-            return;
-        }
         KSet otherKSet = getParamKSet(calleeFunc, 0, inOutEnv);
         KSet thisKSet = getParamKSet(calleeFunc, 1, inOutEnv);
         if (!otherKSet.isNormal() || !thisKSet.isNormal()) {
@@ -155,10 +147,6 @@ public abstract class CppStdModelBase<T> {
      */
     protected void invokeDestructor(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context,
             Function calleeFunc) {
-        if (calleeFunc.getParameterCount() != 1) {
-            Logging.error("Wrong parameter for: " + calleeFunc);
-            return;
-        }
         KSet thisKSet = getParamKSet(calleeFunc, 0, inOutEnv);
         if (!thisKSet.isNormal()) {
             return;
@@ -170,15 +158,18 @@ public abstract class CppStdModelBase<T> {
         }
     }
 
-    /**
-     * Invoke the function model.
-     * @param pcode the pcode.
-     * @param inOutEnv the inOut AbsEnv.
-     * @param tmpEnv the temp AbsEnv.
-     * @param context the Context.
-     * @param calleeFunc the callee Function.
-     */
-    public abstract void invoke(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function calleeFunc);
+    @FunctionalInterface
+    public interface Handler {
+        void invoke(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function function);
+    }
+
+    public abstract Handler resolve(Function function);
+
+    public final void invoke(PcodeOp pcode, AbsEnv inOutEnv, AbsEnv tmpEnv, Context context, Function calleeFunc) {
+        Handler handler = resolve(calleeFunc);
+        if (handler == null) { throw new IllegalArgumentException("Unsupported standard library method: " + calleeFunc); }
+        handler.invoke(pcode, inOutEnv, tmpEnv, context, calleeFunc);
+    }
 
     public static KSet getParamKSet(Function function, int paramIdx, AbsEnv absEnv) {
         return ExternalFunctionBase.getParamKSet(function, paramIdx, absEnv);

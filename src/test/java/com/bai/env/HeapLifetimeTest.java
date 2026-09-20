@@ -85,4 +85,74 @@ public class HeapLifetimeTest extends com.bai.util.ARMProgramTestBase {
         caller.applyLifetime(joined);
         assertEquals(joined.getLifetime(heap), caller.getLifetime(heap));
     }
+
+    @Test public void mergedAllocationWritesPreserveOlderObjectValues() {
+        Heap heap = Heap.getHeap(com.bai.Utils.getDefaultAddress(0x3000), mock(Context.class));
+        MemoryEvent allocation = new MemoryEvent(com.bai.Utils.getDefaultAddress(0x3000), null, 0, "allocation");
+        AbsEnv environment = new AbsEnv();
+        ALoc cell = ALoc.getALoc(heap, 0, 4);
+        environment.allocate(heap, allocation);
+        environment.set(cell, new KSet(32).insert(new AbsVal(11)), true);
+        environment.allocate(heap, allocation);
+        environment.set(cell, new KSet(32).insert(new AbsVal(22)), true);
+        assertEquals(new KSet(32).insert(new AbsVal(11)).insert(new AbsVal(22)), environment.get(cell));
+    }
+
+    @Test public void mergedAllocationPartialWritesPreserveOverlap() {
+        Heap heap = Heap.getHeap(com.bai.Utils.getDefaultAddress(0x3000), mock(Context.class));
+        MemoryEvent allocation = new MemoryEvent(com.bai.Utils.getDefaultAddress(0x3000), null, 0, "allocation");
+        AbsEnv environment = new AbsEnv();
+        environment.allocate(heap, allocation);
+        environment.set(ALoc.getALoc(heap, 0, 4), new KSet(32).insert(new AbsVal(0xaaaaaaaaL)), true);
+        environment.allocate(heap, allocation);
+        environment.set(ALoc.getALoc(heap, 2, 4), new KSet(32).insert(new AbsVal(0xbbbbbbbbL)), true);
+        assertEquals(new KSet(16).insert(new AbsVal(0xaaaa)), environment.get(ALoc.getALoc(heap, 0, 2)));
+        assertEquals(new KSet(16).insert(new AbsVal(0xaaaa)).insert(new AbsVal(0xbbbb)), environment.get(ALoc.getALoc(heap, 2, 2)));
+        assertEquals(new KSet(16).insert(new AbsVal(0xbbbb)), environment.get(ALoc.getALoc(heap, 4, 2)));
+    }
+
+    @Test public void singleAllocationWritesStillReplaceOlderValues() {
+        Heap heap = Heap.getHeap(com.bai.Utils.getDefaultAddress(0x3000), mock(Context.class));
+        MemoryEvent allocation = new MemoryEvent(com.bai.Utils.getDefaultAddress(0x3000), null, 0, "allocation");
+        AbsEnv environment = new AbsEnv();
+        ALoc cell = ALoc.getALoc(heap, 0, 4);
+        environment.allocate(heap, allocation);
+        environment.set(cell, new KSet(32).insert(new AbsVal(11)), true);
+        environment.set(cell, new KSet(32).insert(new AbsVal(22)), true);
+        assertEquals(new KSet(32).insert(new AbsVal(22)), environment.get(cell));
+    }
+
+    @Test public void stateInstallationDoesNotReplayMergedHeapWrites() {
+        Heap heap = Heap.getHeap(com.bai.Utils.getDefaultAddress(0x3000), mock(Context.class));
+        MemoryEvent allocation = new MemoryEvent(com.bai.Utils.getDefaultAddress(0x3000), null, 0, "allocation");
+        AbsEnv environment = new AbsEnv();
+        environment.allocate(heap, allocation);
+        environment.set(ALoc.getALoc(heap, 0, 4), new KSet(32).insert(new AbsVal(0xaaaaaaaaL)), true);
+        environment.allocate(heap, allocation);
+        environment.setState(ALoc.getALoc(heap, 2, 4), new KSet(32).insert(new AbsVal(0xbbbbbbbbL)), true);
+        assertEquals(new KSet(16).insert(new AbsVal(0xbbbb)), environment.get(ALoc.getALoc(heap, 2, 2)));
+        assertEquals(new KSet(16).insert(new AbsVal(0xaaaa)), environment.get(ALoc.getALoc(heap, 0, 2)));
+        environment.setState(ALoc.getALoc(heap, 0, 6), new KSet(48).insert(new AbsVal(0xccccccccccccL)), true);
+        assertEquals(new KSet(48).insert(new AbsVal(0xccccccccccccL)), environment.get(ALoc.getALoc(heap, 0, 6)));
+    }
+
+    @Test public void mergedCardinalitySurvivesCopyJoinAndReturn() {
+        Heap heap = Heap.getHeap(com.bai.Utils.getDefaultAddress(0x3000), mock(Context.class));
+        MemoryEvent allocation = new MemoryEvent(com.bai.Utils.getDefaultAddress(0x3000), null, 0, "allocation");
+        AbsEnv single = new AbsEnv();
+        single.allocate(heap, allocation);
+        AbsEnv merged = new AbsEnv(single);
+        merged.allocate(heap, allocation);
+        AbsEnv returned = new AbsEnv();
+        returned.applyLifetime(merged);
+        for (AbsEnv environment : java.util.List.of(new AbsEnv(merged), single.join(merged), returned)) {
+            assertTrue(environment.getLifetime(heap).hasMergedInstances());
+            ALoc cell = ALoc.getALoc(heap, 0, 4);
+            environment.set(cell, new KSet(32).insert(new AbsVal(11)), true);
+            environment.set(cell, new KSet(32).insert(new AbsVal(22)), true);
+            assertEquals(new KSet(32).insert(new AbsVal(11)).insert(new AbsVal(22)), environment.get(cell));
+        }
+        assertFalse(single.getLifetime(heap).hasMergedInstances());
+        assertFalse(HeapLifetime.unknown().hasMergedInstances());
+    }
 }
