@@ -69,6 +69,11 @@ public class Architecture {
                     break;
                 }
                 // fallthrough to error if invalid defaultPointerSize
+            case "MIPS":
+                // MIPS has no condition-flag register: branches consume ordinary values.
+                flagIndexes = new int[0];
+                spIndex = program.getRegister("sp").getOffset();
+                break;
             default:
                 Logging.error("Unsupported architecture.");
                 System.exit(-1);
