@@ -16,7 +16,10 @@ import java.util.Set;
 
 public class LibcStartMainFunction extends ExternalFunctionBase {
 
-    private static final Set<String> staticSymbols = Set.of("__libc_start_main");
+    private static final Set<String> staticSymbols = Set.of(
+            "__libc_start_main",
+            "__uClibc_main",
+            "__uClibc_start_main");
 
     public LibcStartMainFunction() {
         super(staticSymbols);
